@@ -1,2 +1,3 @@
 .pi-subagents/
 .superpowers/
+*.elc
