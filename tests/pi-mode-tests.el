@@ -567,5 +567,64 @@
   (should-error (pi-mode-show-all) :type 'user-error)
   (should (equal (pi-mode-toggle-panel) :hidden)))
 
+;;; Task 8: keybindings preset + Configure commands
+
+(ert-deftest pi-mode-test-keys-json-valid ()
+  "The preset parses as JSON and contains the required remaps."
+  ;; json-parse-string defaults :array-type to vector; ask for lists to
+  ;; match the expectations below.
+  (let ((data (json-parse-string pi-mode--keybindings-json :array-type 'list)))
+    (should (equal (gethash "app.clear" data) '("ctrl+shift+c")))
+    (should (equal (gethash "app.message.copy" data) '("ctrl+shift+x")))
+    (should (equal (gethash "tui.editor.deleteToLineStart" data) '("ctrl+shift+u")))
+    (should (equal (gethash "tui.editor.historyPrevious" data) "ctrl+p"))
+    (should (equal (gethash "app.model.cycleForward" data) "ctrl+alt+p"))))
+
+(ert-deftest pi-mode-test-keys-install ()
+  "Install writes the preset; existing file gets a .bak backup."
+  (let ((pi-mode-agent-dir (make-temp-file "pi-agent-" t)))
+    (unwind-protect
+        (progn
+          (write-region "old" nil (pi-mode--keybindings-path))
+          (pi-mode-install-keybindings t) ; force: no prompt
+          (should (file-exists-p (concat (pi-mode--keybindings-path) ".bak")))
+          (with-temp-buffer
+            (insert-file-contents (pi-mode--keybindings-path))
+            (should (string-match-p "ctrl\\+shift\\+c" (buffer-string)))))
+      (delete-directory pi-mode-agent-dir t))))
+
+(ert-deftest pi-mode-test-configure-model ()
+  "pi-mode-configure-model sends /model."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[cm]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[cm]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b (pi-mode-configure-model "gpt-5.1"))
+           (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
+             (should call)
+             (should (equal (car (cdr call)) "/model gpt-5.1"))))
+       (pi-mode--unregister-session "*pi[cm]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-configure-thinking ()
+  "pi-mode-configure-thinking sends shift+tab."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[ct]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[ct]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b (pi-mode-configure-thinking))
+           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                          '("tab" "shift"))))
+       (pi-mode--unregister-session "*pi[ct]*")
+       (kill-buffer b) (delete-process p)))))
+
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here

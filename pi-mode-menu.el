@@ -37,7 +37,13 @@
     ("t" "Toggle recent" pi-mode-toggle-recent)]
    ["Debug"
     ("l" "Log buffer" pi-mode-show-debug)
-    ("d" "Debug on/off" pi-mode-toggle-debug)]])
+    ("d" "Debug on/off" pi-mode-toggle-debug)]
+   ["Configure"
+    ("m" "Model" pi-mode-configure-model)
+    ("T" "Thinking" pi-mode-configure-thinking)
+    ("u" "TUI mode" pi-mode-configure-tui-mode)
+    ("k" "Install keybindings" pi-mode-install-keybindings)
+    ("c" "CLI args" pi-mode-configure-cli-args)]])
 
 (provide 'pi-mode-menu)
 ;;; pi-mode-menu.el ends here

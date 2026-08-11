@@ -22,6 +22,7 @@
 (require 'ghostel)
 (require 'transient)
 (require 'compile)          ; compilation--message->loc etc. (batch needs it)
+(require 'pi-mode-keys)     ; standalone installer; does not require pi-mode
 
 (defgroup pi-mode nil
   "Interface for the pi coding agent."
@@ -565,6 +566,50 @@ the same end-then-begin order as `mark-defun'."
   (interactive)
   (setq pi-mode-debug (not pi-mode-debug))
   (message "pi-mode debug %s" (if pi-mode-debug "on" "off")))
+
+;;; Configure commands (spec 8 Configure group)
+
+;;;###autoload
+(defun pi-mode-configure-model (model)
+  "Set pi's model via /model."
+  (interactive "sModel: ")
+  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+    (with-current-buffer (pi-mode-session-buffer session)
+      (ghostel-send-string (format "/model %s" model))
+      (ghostel-send-key "return"))))
+
+;;;###autoload
+(defun pi-mode-configure-thinking ()
+  "Cycle pi's thinking level (shift+tab)."
+  (interactive)
+  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+    (with-current-buffer (pi-mode-session-buffer session)
+      (ghostel-send-key "tab" "shift"))))
+
+;;;###autoload
+(defun pi-mode-configure-tui-mode ()
+  "Flip --tui-mode regular/fullscreen and relaunch the session."
+  (interactive)
+  (let* ((session (pi-mode--resolve-session current-prefix-arg))
+         (current (if (member "--tui-mode" pi-mode-cli-args)
+                      (cadr (member "--tui-mode" pi-mode-cli-args))
+                    "regular"))
+         (next (if (equal current "fullscreen") "regular" "fullscreen")))
+    (when (y-or-n-p (format "Switch TUI mode to %s? The session restarts. " next))
+      (setq pi-mode-cli-args
+            (cl-remove "--tui-mode" (cl-remove "fullscreen" (cl-remove "regular" pi-mode-cli-args) :test #'equal) :test #'equal))
+      (push "--tui-mode" pi-mode-cli-args)
+      (push next pi-mode-cli-args)
+      (setf (pi-mode-session-exit-requested session) t)
+      (delete-process (pi-mode-session-process session))
+      (pi-mode--launch-buffer (pi-mode-session-project-root session) pi-mode-cli-args)
+      (pi-mode-log "tui-mode switched to %s" next))))
+
+;;;###autoload
+(defun pi-mode-configure-cli-args ()
+  "Customize `pi-mode-cli-args'."
+  (interactive)
+  (customize-variable 'pi-mode-cli-args))
 
 ;;; Keymap and global binding
 
