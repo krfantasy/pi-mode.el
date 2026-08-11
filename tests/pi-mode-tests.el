@@ -25,6 +25,7 @@
   "Run BODY with the ghostel exec/send surface replaced by recorders."
   (let ((pi-mode-test--calls nil)
         (pi-mode-confirm-kill nil))   ; keep kill-buffer hooks inert in batch
+    (clrhash pi-mode--sessions)      ; hermetic: no cross-test session leaks
     (cl-letf (((symbol-function 'ghostel-exec)
                (lambda (&rest args)
                  (apply #'pi-mode-test--record-call 'ghostel-exec args)
@@ -322,6 +323,103 @@
                           '("escape" nil))))
        (pi-mode--unregister-session "*pi[int]*")
        (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-embed-file-format ()
+  "Embed format matches pi's <file name=...> convention."
+  (should (equal (pi-mode--embed-file "/tmp/a.ts" "line1\nline2")
+                 "<file name=\"/tmp/a.ts\">\nline1\nline2\n</file>")))
+
+(ert-deftest pi-mode-test-region-line-range ()
+  (with-temp-buffer
+    (insert "a\nb\nc\nd\n")
+    (should (equal (pi-mode--region-line-range 1 8) '(1 4)))))
+
+(ert-deftest pi-mode-test-send-region-embed ()
+  "send-region embeds region content from the live buffer."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[re]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[re]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-region-embed-p t))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-temp-buffer
+             (insert "hello\nworld")
+             (let ((file "/tmp/hello.txt"))
+               (cl-letf (((symbol-function 'buffer-file-name) (lambda () file))
+                         ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
+                 (pi-mode-send-region (point-min) (point-max) nil))))
+           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls))
+                 (text (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))
+             (should call)
+             (should (string-match-p
+                      "<file name=\"/tmp/hello.txt\">\nhello\nworld\n</file>"
+                      text))))
+       (pi-mode--unregister-session "*pi[re]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-send-region-reference ()
+  "C-u (reference-p) sends @path#Lstart-Lend instead of content."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rr]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[rr]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-temp-buffer
+             (insert "a\nb\nc\n")
+             (cl-letf (((symbol-function 'buffer-file-name) (lambda () "/tmp/r.ts"))
+                       ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
+               (pi-mode-send-region (point-min) (point-max) t)))
+           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
+             (should call)
+             (should (string-match-p "@/tmp/r.ts#L1-L4"
+                                     (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls))))))
+       (pi-mode--unregister-session "*pi[rr]*")
+       (kill-buffer b) (delete-process p))))))
+
+(ert-deftest pi-mode-test-send-region-requires-region ()
+  "send-region without a region (point-min = point-max) errors."
+  (pi-mode-test-with-mock-ghostel
+   (should-error (pi-mode-send-region 1 1 nil) :type 'user-error)))
+
+(ert-deftest pi-mode-test-send-defun-embed ()
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rd]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[rd]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-temp-buffer
+             (insert "(defun foo ()\n  t)\n\n(defun bar ()\n  nil)\n")
+             (goto-char (point-min))
+             (cl-letf (((symbol-function 'buffer-file-name) (lambda () "/tmp/x.el"))
+                       ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
+               (pi-mode-send-defun)))
+           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
+             (should call)
+             (should (string-match-p
+                      "<file name=\"/tmp/x.el\">\n(defun foo ()\n  t)"
+                      (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls))))))
+       (pi-mode--unregister-session "*pi[rd]*")
+       (kill-buffer b) (delete-process p))))))
+
+(ert-deftest pi-mode-test-send-error-fallback-parse ()
+  "Error-at-point parses file:line:col from thing at point."
+  (with-temp-buffer
+    (insert "/tmp/broken.ts:12:5")
+    (goto-char 1)
+    (cl-letf (((symbol-function 'thing-at-point)
+               (lambda (thing) (when (eq thing 'filename)
+                                 "/tmp/broken.ts:12:5"))))
+      (should (equal (pi-mode--error-at-point)
+                     '("/tmp/broken.ts" 12 5 nil))))))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here

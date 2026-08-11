@@ -366,5 +366,128 @@ Dedupe is membership-based so no prompt appears twice in the ring."
 
 (define-key pi-mode-map (kbd "C-<escape>") #'pi-mode-interrupt)
 
+;;; Region and context sending
+
+(defcustom pi-mode-region-embed-p t
+  "When non-nil, send regions as embedded <file> blocks.
+When nil, send the region as raw text."
+  :type 'boolean
+  :group 'pi-mode)
+
+(defun pi-mode--embed-file (file content)
+  "Wrap CONTENT in pi's <file name=...> embed convention."
+  (format "<file name=\"%s\">\n%s\n</file>" file content))
+
+(defun pi-mode--region-line-range (start end)
+  "Return (START-LINE END-LINE) for the 1-based lines of START..END."
+  (list (line-number-at-pos start) (line-number-at-pos end)))
+
+(defun pi-mode--send-context (session file content start end reference-p)
+  "Send FILE's region START..END to SESSION.
+When REFERENCE-P, send @file#Lstart-Lend text; otherwise embed CONTENT."
+  (let* ((prompt (pi-mode--read-prompt))
+         (text (if reference-p
+                   (format "@%s#L%d-L%d" file start end)
+                 (pi-mode--embed-file file content)))
+         (full (if (and prompt (> (length prompt) 0))
+                   (concat prompt "\n\n" text)
+                 text)))
+    (pi-mode--send-text session full)))
+
+(defun pi-mode--send-region-internal (start end reference-p)
+  (unless (< start end)
+    (user-error "No active region"))
+  (let* ((session (pi-mode--resolve-session nil t))
+         (file (or (buffer-file-name)
+                   (buffer-name (current-buffer))))
+         (content (buffer-substring-no-properties start end))
+         (range (pi-mode--region-line-range start end)))
+    (pi-mode--send-context session file content (car range) (cadr range) reference-p)))
+
+;;;###autoload
+(defun pi-mode-send-region (start end &optional reference-p)
+  "Send the region to the target pi session.
+With prefix argument, send a @file#Lstart-Lend reference instead of the
+embedded region content."
+  (interactive "r\nP")
+  (pi-mode--send-region-internal start end reference-p))
+
+;;;###autoload
+(defun pi-mode-send-file (file)
+  "Send FILE (read from disk) to the target pi session."
+  (interactive "fFile to send: ")
+  (let* ((session (pi-mode--resolve-session nil t))
+         (content (with-temp-buffer
+                    (insert-file-contents file)
+                    (buffer-string))))
+    (pi-mode--send-context session file content 1 1 nil)))
+
+;;;###autoload
+(defun pi-mode--defun-bounds ()
+  "Return (START . END) for the defun at point, or nil.
+
+Portable replacement for `bounds-of-defun-at-point', which was removed
+in Emacs 30 (obsolete since 29); this mode targets Emacs 28.1+.  Uses
+the same end-then-begin order as `mark-defun'."
+  (save-excursion
+    (ignore-errors
+      (let ((end (progn (end-of-defun) (point)))
+            (beg (progn (beginning-of-defun) (point))))
+        (when (> end beg)
+          (cons beg end))))))
+
+;;;###autoload
+(defun pi-mode-send-defun ()
+  "Send the defun at point to the target pi session."
+  (interactive)
+  (let* ((bounds (pi-mode--defun-bounds)))
+    (unless bounds
+      (user-error "No defun at point"))
+    (pi-mode--send-region-internal (car bounds) (cdr bounds) nil)))
+
+(defun pi-mode--error-at-point ()
+  "Return (FILE LINE COLUMN MESSAGE) for the error at point, or nil."
+  (let ((msg (get-text-property (point) 'compilation-message)))
+    (if msg
+        (let* ((loc (compilation--message->loc msg))
+               (file-struct (compilation--loc->file-struct loc))
+               (file (caar file-struct)))
+          (list file
+                (compilation--loc->line loc)
+                (compilation--loc->col loc)
+                (compilation--message->text msg)))
+      (when-let ((s (thing-at-point 'filename)))
+        (when (string-match "\\(.+\\):\\([0-9]+\\):\\([0-9]+\\)" s)
+          (list (match-string 1 s)
+                (string-to-number (match-string 2 s))
+                (string-to-number (match-string 3 s))
+                nil))))))
+
+;;;###autoload
+(defun pi-mode-send-error ()
+  "Send the error at point (compilation message or file:line:col)."
+  (interactive)
+  (let* ((loc (pi-mode--error-at-point)))
+    (unless loc
+      (user-error "No error found at point"))
+    (let* ((file (nth 0 loc)) (line (nth 1 loc)) (col (nth 2 loc)) (msg (nth 3 loc))
+           (session (pi-mode--resolve-session nil t))
+           (content (when (file-readable-p file)
+                      (with-temp-buffer
+                        (insert-file-contents file)
+                        (let* ((l (max 1 (- line 5)))
+                               (e (min (point-max) (save-excursion
+                                                     (goto-char (point-min))
+                                                     (forward-line (1+ line))
+                                                     (point)))))
+                          (buffer-substring-no-properties
+                           (save-excursion (goto-char (point-min)) (forward-line (1- l)) (point))
+                           e)))))
+           (text (format "Error at %s:%s:%s%s\n%s"
+                         file line col
+                         (if msg (format ": %s" msg) "")
+                         (or content ""))))
+      (pi-mode--send-text session text))))
+
 (provide 'pi-mode)
 ;;; pi-mode.el ends here
