@@ -21,6 +21,7 @@
 (require 'project)          ; project-root is not autoloaded
 (require 'ghostel)
 (require 'transient)
+(require 'compile)          ; compilation--message->loc etc. (batch needs it)
 
 (defgroup pi-mode nil
   "Interface for the pi coding agent."
@@ -455,7 +456,11 @@ the same end-then-begin order as `mark-defun'."
           (list file
                 (compilation--loc->line loc)
                 (compilation--loc->col loc)
-                (compilation--message->text msg)))
+                ;; the message struct has no text field; the message text is
+                ;; the buffer text at the error position
+                (string-trim
+                 (buffer-substring-no-properties (line-beginning-position)
+                                                 (line-end-position)))))
       (when-let ((s (thing-at-point 'filename)))
         (when (string-match "\\(.+\\):\\([0-9]+\\):\\([0-9]+\\)" s)
           (list (match-string 1 s)

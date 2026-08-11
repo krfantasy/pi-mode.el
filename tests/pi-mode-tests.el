@@ -378,9 +378,9 @@
            (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
              (should call)
              (should (string-match-p "@/tmp/r.ts#L1-L4"
-                                     (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls))))))
+                                     (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))))
        (pi-mode--unregister-session "*pi[rr]*")
-       (kill-buffer b) (delete-process p))))))
+       (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-send-region-requires-region ()
   "send-region without a region (point-min = point-max) errors."
@@ -406,9 +406,9 @@
              (should call)
              (should (string-match-p
                       "<file name=\"/tmp/x.el\">\n(defun foo ()\n  t)"
-                      (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls))))))
+                      (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))))
        (pi-mode--unregister-session "*pi[rd]*")
-       (kill-buffer b) (delete-process p))))))
+       (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-send-error-fallback-parse ()
   "Error-at-point parses file:line:col from thing at point."
