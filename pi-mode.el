@@ -370,8 +370,9 @@ Dedupe is membership-based so no prompt appears twice in the ring."
 ;;; Region and context sending
 
 (defcustom pi-mode-region-embed-p t
-  "When non-nil, send regions as embedded <file> blocks.
-When nil, send the region as raw text."
+  "When non-nil (default), region sends use the embedded <file> block format.
+With a prefix argument (C-u), a send switches to @file#Lstart-Lend
+reference mode instead."
   :type 'boolean
   :group 'pi-mode)
 
@@ -385,7 +386,8 @@ When nil, send the region as raw text."
 
 (defun pi-mode--send-context (session file content start end reference-p)
   "Send FILE's region START..END to SESSION.
-When REFERENCE-P, send @file#Lstart-Lend text; otherwise embed CONTENT."
+When REFERENCE-P, send @file#Lstart-Lend text; otherwise embed CONTENT.
+Records a non-empty prompt in the prompt history (spec: all sends do)."
   (let* ((prompt (pi-mode--read-prompt))
          (text (if reference-p
                    (format "@%s#L%d-L%d" file start end)
@@ -393,6 +395,8 @@ When REFERENCE-P, send @file#Lstart-Lend text; otherwise embed CONTENT."
          (full (if (and prompt (> (length prompt) 0))
                    (concat prompt "\n\n" text)
                  text)))
+    (when (and prompt (> (length prompt) 0))
+      (pi-mode--prompt-history-push prompt))
     (pi-mode--send-text session full)))
 
 (defun pi-mode--send-region-internal (start end reference-p)
@@ -423,7 +427,6 @@ embedded region content."
                     (buffer-string))))
     (pi-mode--send-context session file content 1 1 nil)))
 
-;;;###autoload
 (defun pi-mode--defun-bounds ()
   "Return (START . END) for the defun at point, or nil.
 
