@@ -235,17 +235,6 @@ launch fails the scratch buffer is removed."
   (interactive)
   (pi-mode--launch-buffer (pi-mode--project-root) pi-mode-cli-args))
 
-;; Pi buffers dock in a bottom side window when displayed with
-;; `display-buffer'.  `window-height' is a function so the
-;; `pi-mode-window-height' defcustom is honored at display time (a bare
-;; variable symbol in the alist would be neither number nor function
-;; and silently ignored by `display-buffer').
-(add-to-list 'display-buffer-alist
-             '("\\*pi\\["
-               (display-buffer-in-side-window)
-               (side . bottom)
-               (window-height . (lambda (win) pi-mode-window-height))))
-
 ;;; Target resolution
 
 (defun pi-mode--prompt-session (sessions)
@@ -514,6 +503,18 @@ the same end-then-begin order as `mark-defun'."
   "Height fraction for pi side windows."
   :type 'number
   :group 'pi-mode)
+
+;; Pi buffers dock in a bottom side window when displayed with
+;; `display-buffer'.  `window-height' must be a NUMBER or a function
+;; that resizes the window itself (a function's return value is ignored
+;; in Emacs 28+); the backquote splices the defcustom's numeric value at
+;; load time, so changing `pi-mode-window-height' afterwards requires
+;; re-adding this entry.
+(add-to-list 'display-buffer-alist
+             `("\\*pi\\["
+               (display-buffer-in-side-window)
+               (side . bottom)
+               (window-height . ,pi-mode-window-height)))
 
 (defvar pi-mode--panel-hidden nil)
 

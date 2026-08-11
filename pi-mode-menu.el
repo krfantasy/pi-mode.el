@@ -10,6 +10,7 @@
 (require 'pi-mode)
 (require 'pi-mode-session)
 
+;;;###autoload
 (transient-define-prefix pi-mode-menu ()
   "Command menu for pi-mode sessions."
   [:description "pi-mode"
