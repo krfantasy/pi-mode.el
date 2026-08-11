@@ -5,6 +5,7 @@
 ;; Package-Requires: ((emacs "28.1") (ghostel "0.49") (transient "0.7"))
 ;; Keywords: tools, processes
 ;; URL: https://github.com/jayxu/pi-mode.el
+;; License: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
 
@@ -17,6 +18,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'project)          ; project-root is not autoloaded
 (require 'ghostel)
 (require 'transient)
 
@@ -39,6 +41,7 @@
   "Minor mode for buffers running the pi coding agent.
 
 \\{pi-mode-map}"
+  :group 'pi-mode
   :lighter " Pi"
   :keymap pi-mode-map)
 
@@ -49,6 +52,23 @@
       (let ((inhibit-read-only t))
         (goto-char (point-max))
         (insert (format-time-string "%H:%M:%S ") (apply #'format format-string args) "\n")))))
+
+;;; Project detection
+
+(defcustom pi-mode-project-root-function nil
+  "Function returning the project root for the current context.
+Called with no arguments; must return a directory string.
+When nil, `project-current' is used with `default-directory' as fallback."
+  :type '(choice (const :tag "Use project.el" nil) function)
+  :group 'pi-mode)
+
+(defun pi-mode--project-root ()
+  "Return the project root for the current context."
+  (let ((root (if pi-mode-project-root-function
+                  (funcall pi-mode-project-root-function)
+                (when-let ((proj (project-current)))
+                  (project-root proj)))))
+    (or root default-directory)))
 
 (provide 'pi-mode)
 ;;; pi-mode.el ends here

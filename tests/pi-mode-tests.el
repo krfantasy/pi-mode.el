@@ -7,6 +7,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'project)          ; project-root is not autoloaded; the cl-letf
+                            ; mock of project-current bypasses its autoload
 (require 'pi-mode)
 
 (defvar pi-mode-test--calls nil
@@ -55,6 +57,27 @@
     (pi-mode-log "hello %s" "world")
     (with-current-buffer "*pi-mode-debug*"
       (should (string-match-p "hello world" (buffer-string))))))
+
+(ert-deftest pi-mode-test-project-root-override ()
+  "The override function wins when set."
+  (let ((pi-mode-project-root-function (lambda () "/tmp/override/")))
+    (should (equal (pi-mode--project-root) "/tmp/override/"))))
+
+(ert-deftest pi-mode-test-project-root-fallback ()
+  "Falls back to default-directory when no project is found."
+  (let ((pi-mode-project-root-function nil)
+        (default-directory "/tmp/fallback-dir/"))
+    (cl-letf (((symbol-function 'project-current) (lambda () nil)))
+      (should (equal (pi-mode--project-root) "/tmp/fallback-dir/")))))
+
+(ert-deftest pi-mode-test-project-root-from-project ()
+  "Uses project-root when project.el finds a project."
+  (let ((pi-mode-project-root-function nil))
+    ;; Real project-current returns (list 'vc BACKEND ROOT); the
+    ;; (transient DIR) shape's project-root is a LIST in Emacs 30.
+    (cl-letf (((symbol-function 'project-current)
+               (lambda () (list 'vc 'Git "/tmp/proj-root/"))))
+      (should (equal (pi-mode--project-root) "/tmp/proj-root/")))))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here
