@@ -136,18 +136,18 @@
   "pi-mode sentinel runs the stashed sentinel first, then cleanup."
   (let ((b (get-buffer-create "*pi[sentinel]*"))
         (p (pi-mode-test--fake-process))
-        (stashed-run nil) (cleaned nil))
+        (stashed-run nil) (hook-args nil))
     (unwind-protect
         (let ((s (make-pi-mode-session :id "*pi[sentinel]*" :buffer b :process p
                                        :project-root "/tmp/")))
           (pi-mode--register-session s)
           (set-process-sentinel p (lambda (_proc event) (setq stashed-run event)))
-          (pi-mode--attach-sentinel p)
-          (cl-letf (((symbol-function 'pi-mode--cleanup-session)
-                     (lambda (_proc) (setq cleaned t))))
+          (let ((pi-mode-on-exit-hook
+                 (list (lambda (buf event) (setq hook-args (list buf event))))))
+            (pi-mode--attach-sentinel p)
             (funcall (process-sentinel p) p "finished\n")
             (should (equal stashed-run "finished\n"))
-            (should cleaned)))
+            (should (equal hook-args (list b "finished")))))
       (kill-buffer b) (delete-process p)
       (pi-mode--unregister-session "*pi[sentinel]*"))))
 
@@ -224,6 +224,40 @@
           ;; no sessions → user-error
           (pi-mode--unregister-session "*pi[r2]*")
           (should-error (pi-mode--resolve-session nil) :type 'user-error))
+      (kill-buffer b1) (kill-buffer b2)
+      (delete-process p1) (delete-process p2))))
+
+(ert-deftest pi-mode-test-resolve-updates-mru ()
+  "Resolving a session updates last-used so it becomes the MRU session."
+  (let ((b1 (get-buffer-create "*pi[m1]*"))
+        (b2 (get-buffer-create "*pi[m2]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s1 (make-pi-mode-session :id "*pi[m1]*" :buffer b1 :process p1
+                                        :project-root "/tmp/"
+                                        :last-used (current-time)))
+              (s2 (make-pi-mode-session :id "*pi[m2]*" :buffer b2 :process p2
+                                        :project-root "/tmp/"
+                                        :last-used (time-add (current-time) -100))))
+          (pi-mode--register-session s1)
+          (pi-mode--register-session s2)
+          ;; s1 is newest; resolve s2 via the C-u prompt branch
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) "*pi[m2]*")))
+            (should (eq (pi-mode--resolve-session t) s2)))
+          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+          ;; resolving s1 again makes it MRU again
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) "*pi[m1]*")))
+            (should (eq (pi-mode--resolve-session t) s1)))
+          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s1))
+          ;; in-buffer branch also updates
+          (with-current-buffer b2
+            (should (eq (pi-mode--resolve-session nil) s2)))
+          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+          (pi-mode--unregister-session "*pi[m1]*")
+          (pi-mode--unregister-session "*pi[m2]*"))
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))
 
@@ -306,7 +340,17 @@
            (should (equal pi-mode-prompt-history '("my prompt")))
            (should (assq 'ghostel-paste-string pi-mode-test--calls)))
        (pi-mode--unregister-session "*pi[sp]*")
-       (kill-buffer b) (delete-process p)))))
+       (kill-buffer b) (delete-process p)
+       (ignore-errors (delete-file pi-mode-prompt-history-file))))))
+
+(ert-deftest pi-mode-test-mode-line-session-name ()
+  "Sessions contribute their name to the buffer's mode-line-misc-info."
+  (let ((s (pi-mode--make-session "/tmp/ml-proj/" "refactor")))
+    (unwind-protect
+        (with-current-buffer (pi-mode-session-buffer s)
+          (should (member '(:eval (pi-mode--mode-line-segment)) mode-line-misc-info))
+          (should (equal (pi-mode--mode-line-segment) " refactor")))
+      (kill-buffer (pi-mode-session-buffer s)))))
 
 (ert-deftest pi-mode-test-interrupt-sends-escape ()
   "pi-mode-interrupt sends the escape key."
@@ -333,6 +377,34 @@
   (with-temp-buffer
     (insert "a\nb\nc\nd\n")
     (should (equal (pi-mode--region-line-range 1 8) '(1 4)))))
+
+(ert-deftest pi-mode-test-send-region-raw-text ()
+  "With pi-mode-region-embed-p nil, region sends use raw content."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rrr]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[rrr]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-region-embed-p nil)
+          (pi-mode-prompt-history nil)
+          (pi-mode-prompt-history-file
+           (make-temp-file "pi-mode-history-" nil ".el")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-temp-buffer
+             (insert "raw line")
+             (cl-letf (((symbol-function 'buffer-file-name) (lambda () "/tmp/raw.ts"))
+                       ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
+               (pi-mode-send-region (point-min) (point-max) nil)))
+           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
+             (should call)
+             (should (equal (car (cdr call)) "raw line"))
+             ;; no <file name=...> wrapper in raw mode
+             (should-not (string-match-p "<file name=" (car (cdr call))))))
+       (pi-mode--unregister-session "*pi[rrr]*")
+       (kill-buffer b) (delete-process p)
+       (ignore-errors (delete-file pi-mode-prompt-history-file))))))
 
 (ert-deftest pi-mode-test-send-region-embed ()
   "send-region embeds region content and records the prompt in history."

@@ -181,16 +181,18 @@ on exit events."
        (when (functionp (process-get proc 'pi-mode--ghostel-sentinel))
          (funcall (process-get proc 'pi-mode--ghostel-sentinel) proc event))
        (when (string-match-p "finished\\|exited\\|killed\\|terminated\\|deleted\\|closed" event)
-         (pi-mode--cleanup-session proc))))))
+         (pi-mode--cleanup-session proc event))))))
 
-(defun pi-mode--cleanup-session (process)
-  "Run session cleanup for PROCESS (idempotent)."
+(defun pi-mode--cleanup-session (process event)
+  "Run session cleanup for PROCESS (idempotent).
+EVENT is the raw sentinel event string; `pi-mode-on-exit-hook'
+receives it trimmed."
   (when-let ((session (pi-mode--session-by-process process)))
     (unless (pi-mode-session-cleanup-done session)
       (setf (pi-mode-session-cleanup-done session) t)
       (let ((buffer (pi-mode-session-buffer session)))
         (pi-mode--unregister-session (pi-mode-session-id session))
-        (run-hook-with-args 'pi-mode-on-exit-hook buffer "exited")
+        (run-hook-with-args 'pi-mode-on-exit-hook buffer (string-trim event))
         (when pi-mode-kill-buffer-on-exit
           (kill-buffer buffer))))))
 
@@ -208,7 +210,17 @@ launch, so a failed launch leaves nothing behind."
                       :project-root project-root :last-used (current-time))))
         (setq-local pi-mode--session session)
         (pi-mode +1)
+        (setq-local mode-line-misc-info
+                    (append mode-line-misc-info
+                            '((:eval (pi-mode--mode-line-segment)))))
         session))))
+
+(defun pi-mode--mode-line-segment ()
+  "Session-name segment for the mode line.
+The \" Pi\" lighter comes from `pi-mode'; this adds the session name."
+  (if (and pi-mode--session (pi-mode-session-name pi-mode--session))
+      (concat " " (pi-mode-session-name pi-mode--session))
+    ""))
 
 (defun pi-mode--launch-buffer (project-root args &optional name)
   "Create a session buffer, launch pi in it, and display it.
@@ -248,22 +260,27 @@ launch fails the scratch buffer is removed."
 (defun pi-mode--resolve-session (&optional prefix no-ask)
   "Resolve the target session for a command.
 PREFIX non-nil means the user gave C-u: prompt unless NO-ASK.
-Rules: in-buffer self; sole; sole-visible; else MRU with echo."
-  (let ((sessions (pi-mode--active-sessions)))
-    (cond
-     ((null sessions)
-      (user-error "No running pi session; start one with `pi-mode-start'"))
-     ((and prefix (not no-ask))
-      (pi-mode--prompt-session sessions))
-     ((pi-mode--session-by-buffer (current-buffer)))
-     ((= (length sessions) 1)
-      (car sessions))
-     ((= (length (pi-mode--visible-sessions sessions)) 1)
-      (car (pi-mode--visible-sessions sessions)))
-     (t
-      (let ((mru (pi-mode--mru-session sessions)))
-        (message "pi-mode: using session %s" (pi-mode-session-id mru))
-        mru)))))
+Rules: in-buffer self; sole; sole-visible; else MRU with echo.
+The resolved session's `last-used' is updated (MRU semantics)."
+  (let* ((sessions (pi-mode--active-sessions))
+         (session
+          (cond
+           ((null sessions)
+            (user-error "No running pi session; start one with `pi-mode-start'"))
+           ((and prefix (not no-ask))
+            (pi-mode--prompt-session sessions))
+           ((pi-mode--session-by-buffer (current-buffer)))
+           ((= (length sessions) 1)
+            (car sessions))
+           ((= (length (pi-mode--visible-sessions sessions)) 1)
+            (car (pi-mode--visible-sessions sessions)))
+           (t
+            (let ((mru (pi-mode--mru-session sessions)))
+              (message "pi-mode: using session %s" (pi-mode-session-id mru))
+              mru)))))
+    (when session
+      (setf (pi-mode-session-last-used session) (current-time)))
+    session))
 
 ;;; Kill-buffer guard
 
@@ -371,9 +388,9 @@ Dedupe is membership-based so no prompt appears twice in the ring."
 ;;; Region and context sending
 
 (defcustom pi-mode-region-embed-p t
-  "When non-nil (default), region sends use the embedded <file> block format.
-With a prefix argument (C-u), a send switches to @file#Lstart-Lend
-reference mode instead."
+  "When non-nil, region sends use the embedded <file> block format.
+When nil, region content is sent as raw text.  A prefix argument (C-u)
+switches a send to @file#Lstart-Lend reference mode regardless."
   :type 'boolean
   :group 'pi)
 
@@ -385,14 +402,18 @@ reference mode instead."
   "Return (START-LINE END-LINE) for the 1-based lines of START..END."
   (list (line-number-at-pos start) (line-number-at-pos end)))
 
-(defun pi-mode--send-context (session file content start end reference-p)
+(defun pi-mode--send-context (session file content start end reference-p embed-p)
   "Send FILE's region START..END to SESSION.
-When REFERENCE-P, send @file#Lstart-Lend text; otherwise embed CONTENT.
+When REFERENCE-P, send @file#Lstart-Lend text.  Otherwise embed CONTENT
+in pi's <file name=...> block when EMBED-P, or send the raw CONTENT
+when EMBED-P is nil (`pi-mode-region-embed-p' off).  EMBED-P is always
+passed explicitly by callers.
 Records a non-empty prompt in the prompt history (spec: all sends do)."
   (let* ((prompt (pi-mode--read-prompt))
-         (text (if reference-p
-                   (format "@%s#L%d-L%d" file start end)
-                 (pi-mode--embed-file file content)))
+         (text (cond
+                (reference-p (format "@%s#L%d-L%d" file start end))
+                (embed-p (pi-mode--embed-file file content))
+                (t content)))
          (full (if (and prompt (> (length prompt) 0))
                    (concat prompt "\n\n" text)
                  text)))
@@ -408,7 +429,8 @@ Records a non-empty prompt in the prompt history (spec: all sends do)."
                    (buffer-name (current-buffer))))
          (content (buffer-substring-no-properties start end))
          (range (pi-mode--region-line-range start end)))
-    (pi-mode--send-context session file content (car range) (cadr range) reference-p)))
+    (pi-mode--send-context session file content (car range) (cadr range)
+                           reference-p (and (not reference-p) pi-mode-region-embed-p))))
 
 ;;;###autoload
 (defun pi-mode-send-region (start end &optional reference-p)
@@ -426,7 +448,7 @@ embedded region content."
          (content (with-temp-buffer
                     (insert-file-contents file)
                     (buffer-string))))
-    (pi-mode--send-context session file content 1 1 nil)))
+    (pi-mode--send-context session file content 1 1 nil t)))
 
 (defun pi-mode--defun-bounds ()
   "Return (START . END) for the defun at point, or nil.
@@ -554,7 +576,9 @@ the same end-then-begin order as `mark-defun'."
   (interactive)
   (let ((sessions (pi-mode--active-sessions)))
     (unless sessions (user-error "No running pi sessions"))
-    (display-buffer (pi-mode-session-buffer (pi-mode--mru-session sessions)))))
+    (let ((session (pi-mode--mru-session sessions)))
+      (setf (pi-mode-session-last-used session) (current-time))
+      (display-buffer (pi-mode-session-buffer session)))))
 
 (defun pi-mode-show-debug ()
   "Show the pi-mode debug buffer."
@@ -623,6 +647,12 @@ the same end-then-begin order as `mark-defun'."
 
 ;;;###autoload
 (define-key global-map (kbd "C-c C-'") #'pi-mode-menu)
+
+;; Emacs 28.1's autoload machinery does not process cookies on
+;; `transient-define-prefix' or `define-key', so provide an explicit
+;; autoload for the menu.  The global C-c C-' binding itself still
+;; requires pi-mode.el to be loaded first (see README).
+(autoload 'pi-mode-menu "pi-mode-menu" "Command menu for pi-mode sessions." t)
 
 ;;; Ghostel configuration (global — see design spec section 4.2)
 
