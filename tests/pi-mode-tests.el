@@ -542,5 +542,30 @@
        (kill-buffer b)
        (ignore-errors (delete-process p))))))
 
+(ert-deftest pi-mode-test-menu-defined ()
+  "The transient menu and its suffix commands exist."
+  (should (commandp 'pi-mode-menu))
+  (dolist (cmd '(pi-mode-session-continue pi-mode-session-resume
+                 pi-mode-session-fork pi-mode-session-rename
+                 pi-mode-session-stop pi-mode-session-stop-all
+                 pi-mode-list-sessions pi-mode-send-prompt
+                 pi-mode-send-region pi-mode-send-file
+                 pi-mode-send-defun pi-mode-send-error
+                 pi-mode-switch-buffer pi-mode-toggle-panel
+                 pi-mode-show-all pi-mode-toggle-recent
+                 pi-mode-interrupt))
+    (should (commandp cmd))))
+
+(ert-deftest pi-mode-test-global-menu-binding ()
+  "C-c C-' is bound to pi-mode-menu globally."
+  (should (eq (lookup-key (current-global-map) (kbd "C-c C-'"))
+              #'pi-mode-menu)))
+
+(ert-deftest pi-mode-test-window-commands-no-error ()
+  "Window commands handle the no-session case gracefully."
+  (should-error (pi-mode-toggle-recent) :type 'user-error)
+  (should-error (pi-mode-show-all) :type 'user-error)
+  (should (equal (pi-mode-toggle-panel) :hidden)))
+
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here

@@ -235,6 +235,17 @@ launch fails the scratch buffer is removed."
   (interactive)
   (pi-mode--launch-buffer (pi-mode--project-root) pi-mode-cli-args))
 
+;; Pi buffers dock in a bottom side window when displayed with
+;; `display-buffer'.  `window-height' is a function so the
+;; `pi-mode-window-height' defcustom is honored at display time (a bare
+;; variable symbol in the alist would be neither number nor function
+;; and silently ignored by `display-buffer').
+(add-to-list 'display-buffer-alist
+             '("\\*pi\\["
+               (display-buffer-in-side-window)
+               (side . bottom)
+               (window-height . (lambda (win) pi-mode-window-height))))
+
 ;;; Target resolution
 
 (defun pi-mode--prompt-session (sessions)
@@ -497,11 +508,78 @@ the same end-then-begin order as `mark-defun'."
                          (or content ""))))
       (pi-mode--send-text session text))))
 
+;;; Window commands
+
+(defcustom pi-mode-window-height 0.3
+  "Height fraction for pi side windows."
+  :type 'number
+  :group 'pi-mode)
+
+(defvar pi-mode--panel-hidden nil)
+
+;;;###autoload
+(defun pi-mode-toggle-panel ()
+  "Hide or restore the pi side window."
+  (interactive)
+  (if pi-mode--panel-hidden
+      (progn
+        (when-let ((session (car (pi-mode--active-sessions))))
+          (display-buffer (pi-mode-session-buffer session)))
+        (setq pi-mode--panel-hidden nil)
+        (message "pi panel shown")
+        :shown)
+    (let ((killed nil))
+      (dolist (win (window-list))
+        (when (string-match-p "\\*pi\\[" (buffer-name (window-buffer win)))
+          (delete-window win)
+          (setq killed t)))
+      (setq pi-mode--panel-hidden killed)
+      (message "pi panel hidden")
+      :hidden)))
+
+;;;###autoload
+(defun pi-mode-show-all ()
+  "Display buffers of all live pi sessions."
+  (interactive)
+  (let ((sessions (pi-mode--active-sessions)))
+    (unless sessions (user-error "No running pi sessions"))
+    (dolist (s sessions)
+      (display-buffer (pi-mode-session-buffer s)))))
+
+;;;###autoload
+(defun pi-mode-toggle-recent ()
+  "Display the most recently used pi session."
+  (interactive)
+  (let ((sessions (pi-mode--active-sessions)))
+    (unless sessions (user-error "No running pi sessions"))
+    (display-buffer (pi-mode-session-buffer (pi-mode--mru-session sessions)))))
+
+(defun pi-mode-show-debug ()
+  "Show the pi-mode debug buffer."
+  (interactive)
+  (display-buffer "*pi-mode-debug*"))
+
+(defun pi-mode-toggle-debug ()
+  "Toggle `pi-mode-debug'."
+  (interactive)
+  (setq pi-mode-debug (not pi-mode-debug))
+  (message "pi-mode debug %s" (if pi-mode-debug "on" "off")))
+
+;;; Keymap and global binding
+
+(define-key pi-mode-map (kbd "C-c C-'") #'pi-mode-menu)
+
+;;;###autoload
+(define-key global-map (kbd "C-c C-'") #'pi-mode-menu)
+
 (provide 'pi-mode)
 
 ;; Require after `provide' so that pi-mode-session.el's own
 ;; `(require 'pi-mode)' resolves via `featurep' — a require before the
 ;; provide would re-enter pi-mode.el mid-load ("Recursive load").
 (require 'pi-mode-session)
+;; Same reasoning: pi-mode-menu.el requires both pi-mode and
+;; pi-mode-session.
+(require 'pi-mode-menu)
 
 ;;; pi-mode.el ends here
