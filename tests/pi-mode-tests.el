@@ -553,7 +553,9 @@
                  pi-mode-send-defun pi-mode-send-error
                  pi-mode-switch-buffer pi-mode-toggle-panel
                  pi-mode-show-all pi-mode-toggle-recent
-                 pi-mode-interrupt))
+                 pi-mode-interrupt pi-mode-configure-model
+                 pi-mode-configure-thinking pi-mode-configure-tui-mode
+                 pi-mode-configure-cli-args pi-mode-install-keybindings))
     (should (commandp cmd))))
 
 (ert-deftest pi-mode-test-global-menu-binding ()
@@ -606,7 +608,11 @@
            (with-current-buffer b (pi-mode-configure-model "gpt-5.1"))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
-             (should (equal (car (cdr call)) "/model gpt-5.1"))))
+             (should (equal (car (cdr call)) "/model gpt-5.1")))
+           ;; the submit (return) must follow the /model command
+           (let ((call (assq 'ghostel-send-key pi-mode-test--calls)))
+             (should call)
+             (should (equal (cdr call) '("return")))))
        (pi-mode--unregister-session "*pi[cm]*")
        (kill-buffer b) (delete-process p)))))
 
@@ -624,6 +630,33 @@
            (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
                           '("tab" "shift"))))
        (pi-mode--unregister-session "*pi[ct]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-configure-tui-mode ()
+  "pi-mode-configure-tui-mode flips --tui-mode and relaunches."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[tu]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[tu]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-cli-args '("--tui-mode" "regular"))
+          (launch-calls nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t))
+                       ((symbol-function 'delete-process) (lambda (&rest _) nil))
+                       ((symbol-function 'pi-mode--launch-buffer)
+                        (lambda (root args &optional _name)
+                          (push (list root args) launch-calls))))
+               ;; toggle regular -> fullscreen, then fullscreen -> regular
+               (pi-mode-configure-tui-mode)
+               (pi-mode-configure-tui-mode)))
+           (should (equal (nreverse launch-calls)
+                          (list (list "/tmp/" '("--tui-mode" "fullscreen"))
+                                (list "/tmp/" '("--tui-mode" "regular"))))))
+       (pi-mode--unregister-session "*pi[tu]*")
        (kill-buffer b) (delete-process p)))))
 
 (provide 'pi-mode-tests)

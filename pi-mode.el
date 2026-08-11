@@ -597,9 +597,15 @@ the same end-then-begin order as `mark-defun'."
          (next (if (equal current "fullscreen") "regular" "fullscreen")))
     (when (y-or-n-p (format "Switch TUI mode to %s? The session restarts. " next))
       (setq pi-mode-cli-args
-            (cl-remove "--tui-mode" (cl-remove "fullscreen" (cl-remove "regular" pi-mode-cli-args) :test #'equal) :test #'equal))
-      (push "--tui-mode" pi-mode-cli-args)
+            (cl-remove "--tui-mode"
+                       (cl-remove "fullscreen"
+                                  (cl-remove "regular" pi-mode-cli-args :test #'equal)
+                                  :test #'equal)
+                       :test #'equal))
+      ;; order matters: push the VALUE first, then the flag, so the list
+      ;; reads ("--tui-mode" next ...)
       (push next pi-mode-cli-args)
+      (push "--tui-mode" pi-mode-cli-args)
       (setf (pi-mode-session-exit-requested session) t)
       (delete-process (pi-mode-session-process session))
       (pi-mode--launch-buffer (pi-mode-session-project-root session) pi-mode-cli-args)
