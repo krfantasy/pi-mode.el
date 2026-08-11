@@ -278,5 +278,93 @@ Rules: in-buffer self; sole; sole-visible; else MRU with echo."
 
 (add-hook 'kill-buffer-hook #'pi-mode--kill-buffer-guard)
 
+
+;;; Prompt history
+
+(defcustom pi-mode-prompt-history-file
+  (locate-user-emacs-file "pi-mode-history")
+  "File where the pi-mode prompt history is persisted."
+  :type 'file
+  :group 'pi-mode)
+
+(defcustom pi-mode-prompt-history-length 200
+  "Maximum number of entries kept in the prompt history."
+  :type 'integer
+  :group 'pi-mode)
+
+(defvar pi-mode-prompt-history nil
+  "Prompt history ring (newest first).")
+
+(defvar pi-mode-prompt-history--loaded nil)
+
+(defun pi-mode--prompt-history-load ()
+  (unless pi-mode-prompt-history--loaded
+    (setq pi-mode-prompt-history--loaded t)
+    (when (file-exists-p pi-mode-prompt-history-file)
+      (with-temp-buffer
+        (insert-file-contents pi-mode-prompt-history-file)
+        (setq pi-mode-prompt-history
+              (ignore-errors (read (buffer-string))))))))
+
+(defun pi-mode--prompt-history-save ()
+  (with-temp-file pi-mode-prompt-history-file
+    (prin1 pi-mode-prompt-history (current-buffer))))
+
+(defun pi-mode--prompt-history-push (text)
+  "Add TEXT to the prompt history, deduped and trimmed.
+Dedupe is membership-based so no prompt appears twice in the ring."
+  (pi-mode--prompt-history-load)
+  (unless (member text pi-mode-prompt-history)
+    (push text pi-mode-prompt-history)
+    (when (> (length pi-mode-prompt-history) pi-mode-prompt-history-length)
+      (setcdr (nthcdr (1- pi-mode-prompt-history-length) pi-mode-prompt-history) nil)))
+  (pi-mode--prompt-history-save))
+
+;;; Sending
+
+(defun pi-mode--session-live-p (session)
+  "Return non-nil when SESSION has a live buffer and process."
+  (and session
+       (buffer-live-p (pi-mode-session-buffer session))
+       (process-live-p (pi-mode-session-process session))))
+
+(defun pi-mode--send-text (session text)
+  "Send TEXT to SESSION's pi via bracketed paste and return."
+  (unless (pi-mode--session-live-p session)
+    (user-error "pi session is not running; start one with `pi-mode-start'"))
+  (run-hook-with-args 'pi-mode-before-send-hook session text)
+  (with-current-buffer (pi-mode-session-buffer session)
+    (ghostel-paste-string text)
+    (ghostel-send-key "return"))
+  (pi-mode-log "sent %S" (substring text 0 (min 80 (length text))))
+  text)
+
+(defun pi-mode--read-prompt ()
+  "Read a prompt from the minibuffer with pi-mode history navigation."
+  (pi-mode--prompt-history-load)
+  (let ((history-add-new-input nil))
+    (read-from-minibuffer "pi> " nil nil t 'pi-mode-prompt-history)))
+
+;;;###autoload
+(defun pi-mode-send-prompt ()
+  "Send a prompt to the target pi session."
+  (interactive)
+  (let* ((session (pi-mode--resolve-session current-prefix-arg))
+         (text (pi-mode--read-prompt)))
+    (when (and text (> (length text) 0))
+      (pi-mode--prompt-history-push text)
+      (pi-mode--send-text session text))))
+
+;;;###autoload
+(defun pi-mode-interrupt ()
+  "Send the escape key to interrupt the target pi session."
+  (interactive)
+  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+    (with-current-buffer (pi-mode-session-buffer session)
+      (ghostel-send-key "escape" nil))
+    (pi-mode-log "interrupt sent")))
+
+(define-key pi-mode-map (kbd "C-<escape>") #'pi-mode-interrupt)
+
 (provide 'pi-mode)
 ;;; pi-mode.el ends here

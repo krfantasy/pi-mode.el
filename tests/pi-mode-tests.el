@@ -226,5 +226,102 @@
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))
 
+
+(ert-deftest pi-mode-test-send-text ()
+  "send-text pastes, presses return, runs before-send hook."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[send]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[send]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (hook-args nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (let ((pi-mode-before-send-hook
+                  (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+             (pi-mode--send-text s "hello pi"))
+           (should (equal hook-args (list s "hello pi")))
+           (should (assq 'ghostel-paste-string pi-mode-test--calls))
+           (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                          '("hello pi")))
+           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                          '("return"))))
+       (pi-mode--unregister-session "*pi[send]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-send-text-dead-session ()
+  "send-text to a dead session signals user-error."
+  (pi-mode-test-with-mock-ghostel
+   (let ((s (make-pi-mode-session :id "*pi[dead]*" :buffer (get-buffer-create "*pi[dead]*")
+                                  :process (pi-mode-test--fake-process)
+                                  :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (delete-process (pi-mode-session-process s))
+           (should-error (pi-mode--send-text s "x") :type 'user-error))
+       (pi-mode--unregister-session "*pi[dead]*")
+       (kill-buffer (pi-mode-session-buffer s))))))
+
+(ert-deftest pi-mode-test-prompt-history ()
+  "Push dedupes, trims, persists; load restores."
+  (let ((pi-mode-prompt-history-file
+         (make-temp-file "pi-mode-history-" nil ".el"))
+        (pi-mode-prompt-history-length 3)
+        (pi-mode-prompt-history nil))
+    (pi-mode--prompt-history-push "one")
+    (pi-mode--prompt-history-push "two")
+    (pi-mode--prompt-history-push "one")   ; dedupe vs car
+    (pi-mode--prompt-history-push "three")
+    (pi-mode--prompt-history-push "four")  ; trim to 3
+    (should (equal pi-mode-prompt-history '("four" "three" "two")))
+    (pi-mode--prompt-history-save)
+    (setq pi-mode-prompt-history--loaded nil) ; force a fresh file read
+    (let ((pi-mode-prompt-history nil))
+      (pi-mode--prompt-history-load)
+      (should (equal pi-mode-prompt-history '("four" "three" "two"))))
+    (delete-file pi-mode-prompt-history-file)))
+
+(ert-deftest pi-mode-test-send-prompt-flow ()
+  "send-prompt reads, pushes history, sends."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[sp]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[sp]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-prompt-history nil)
+          (pi-mode-prompt-history-file
+           (make-temp-file "pi-mode-history-" nil ".el")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--read-prompt)
+                        (lambda () "my prompt"))
+                       ((symbol-function 'completing-read)
+                        (lambda (&rest _) (error "no prompt needed"))))
+               (pi-mode-send-prompt)))
+           (should (equal pi-mode-prompt-history '("my prompt")))
+           (should (assq 'ghostel-paste-string pi-mode-test--calls)))
+       (pi-mode--unregister-session "*pi[sp]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-interrupt-sends-escape ()
+  "pi-mode-interrupt sends the escape key."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[int]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[int]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b (pi-mode-interrupt))
+           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                          '("escape" nil))))
+       (pi-mode--unregister-session "*pi[int]*")
+       (kill-buffer b) (delete-process p)))))
+
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here
