@@ -150,6 +150,47 @@
       (kill-buffer b) (delete-process p)
       (pi-mode--unregister-session "*pi[sentinel]*"))))
 
+(ert-deftest pi-mode-test-launch-failure-leaves-no-session ()
+  "A failed launch (missing pi) registers nothing and leaves no buffer."
+  (pi-mode-test-with-mock-ghostel
+   (let ((sessions-before (hash-table-count pi-mode--sessions))
+         (buffers-before (length (cl-remove-if-not
+                                  (lambda (b) (string-match-p "\\*pi\\[" (buffer-name b)))
+                                  (buffer-list)))))
+     (cl-letf (((symbol-function 'executable-find) (lambda (_s) nil)))
+       (should-error (pi-mode--launch-buffer "/tmp/proj/" nil)
+                     :type 'user-error))
+     (should (= (hash-table-count pi-mode--sessions) sessions-before))
+     (should (= (length (cl-remove-if-not
+                         (lambda (b) (string-match-p "\\*pi\\[" (buffer-name b)))
+                         (buffer-list)))
+                buffers-before)))))
+
+(ert-deftest pi-mode-test-start-command-launches ()
+  "pi-mode-start launches; the pi-mode minor mode stays intact."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+             ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+             ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+             ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil)))
+     (let ((session (pi-mode-start)))
+       (unwind-protect
+           (progn
+             (should (pi-mode-session-process session))
+             (should (eq (pi-mode--session-by-buffer (pi-mode-session-buffer session))
+                         session))
+             (with-current-buffer (pi-mode-session-buffer session)
+               (should pi-mode)             ; minor mode enabled
+               (pi-mode -1)
+               (should (not pi-mode))
+               (pi-mode +1)
+               (should pi-mode)))           ; minor mode function intact
+         (pi-mode--unregister-session (pi-mode-session-id session))
+         (when (buffer-live-p (pi-mode-session-buffer session))
+           (kill-buffer (pi-mode-session-buffer session)))
+         (when (process-live-p (pi-mode-session-process session))
+           (delete-process (pi-mode-session-process session))))))))
+
 (ert-deftest pi-mode-test-resolve-session-rules ()
   "Resolution: in-buffer self; sole; mru with echo; C-u prompts; no-ask."
   (let ((b1 (get-buffer-create "*pi[r1]*"))
@@ -176,8 +217,11 @@
                      (lambda (&rest _) (error "should not prompt"))))
             (should (eq (pi-mode--resolve-session t t) s2)))
           (pi-mode--unregister-session "*pi[r1]*")
-          (pi-mode--unregister-session "*pi[r2]*")
+          ;; rule 3: sole session → it (from an unrelated buffer)
+          (with-temp-buffer
+            (should (eq (pi-mode--resolve-session nil) s2)))
           ;; no sessions → user-error
+          (pi-mode--unregister-session "*pi[r2]*")
           (should-error (pi-mode--resolve-session nil) :type 'user-error))
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))

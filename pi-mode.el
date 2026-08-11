@@ -178,7 +178,7 @@ on exit events."
      (lambda (proc event)
        (when (functionp (process-get proc 'pi-mode--ghostel-sentinel))
          (funcall (process-get proc 'pi-mode--ghostel-sentinel) proc event))
-       (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
+       (when (string-match-p "finished\\|exited\\|killed\\|terminated\\|deleted\\|closed" event)
          (pi-mode--cleanup-session proc))))))
 
 (defun pi-mode--cleanup-session (process)
@@ -193,7 +193,9 @@ on exit events."
           (kill-buffer buffer))))))
 
 (defun pi-mode--make-session (project-root &optional name)
-  "Create and register a session struct for PROJECT-ROOT in a new buffer."
+  "Create an unregistered session struct for PROJECT-ROOT in a new buffer.
+Registration happens in `pi-mode--launch-buffer' after a successful
+launch, so a failed launch leaves nothing behind."
   (let* ((base (format "*pi[%s]*"
                        (file-name-nondirectory (directory-file-name project-root))))
          (buffer-name (pi-mode--unique-buffer-name
@@ -204,28 +206,33 @@ on exit events."
                       :project-root project-root :last-used (current-time))))
         (setq-local pi-mode--session session)
         (pi-mode +1)
-        (pi-mode--register-session session)
         session))))
 
 (defun pi-mode--launch-buffer (project-root args &optional name)
-  "Create a session buffer, launch pi in it, and display it."
-  (let* ((session (pi-mode--make-session project-root name))
-         (buffer (pi-mode-session-buffer session))
-         (process (pi-mode--ghostel-launch buffer project-root args)))
-    (setf (pi-mode-session-process session) process)
-    (pi-mode--attach-sentinel process)
-    (pop-to-buffer buffer)
-    (run-hook-with-args 'pi-mode-after-start-hook session)
-    session))
+  "Create a session buffer, launch pi in it, and display it.
+The session is registered only after a successful launch; when the
+launch fails the scratch buffer is removed."
+  (let ((session (pi-mode--make-session project-root name)))
+    (unwind-protect
+        (let* ((buffer (pi-mode-session-buffer session))
+               (process (pi-mode--ghostel-launch buffer project-root args)))
+          (setf (pi-mode-session-process session) process)
+          (pi-mode--register-session session)
+          (pi-mode--attach-sentinel process)
+          (pop-to-buffer buffer)
+          (run-hook-with-args 'pi-mode-after-start-hook session)
+          session)
+      ;; Launch failed before a process existed: leave no trace.
+      (unless (pi-mode-session-process session)
+        (let ((buffer (pi-mode-session-buffer session)))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
 
 ;;;###autoload
 (defun pi-mode-start ()
   "Start a pi session in the current project."
   (interactive)
   (pi-mode--launch-buffer (pi-mode--project-root) pi-mode-cli-args))
-
-;;;###autoload
-(defalias 'pi-mode 'pi-mode-start)
 
 ;;; Target resolution
 
@@ -243,7 +250,7 @@ Rules: in-buffer self; sole; sole-visible; else MRU with echo."
   (let ((sessions (pi-mode--active-sessions)))
     (cond
      ((null sessions)
-      (user-error "No running pi session; start one with `pi-mode'"))
+      (user-error "No running pi session; start one with `pi-mode-start'"))
      ((and prefix (not no-ask))
       (pi-mode--prompt-session sessions))
      ((pi-mode--session-by-buffer (current-buffer)))
