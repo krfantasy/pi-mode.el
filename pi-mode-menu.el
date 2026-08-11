@@ -1,5 +1,13 @@
 ;;; pi-mode-menu.el --- Transient command menu for pi-mode -*- lexical-binding: t; -*-
 
+;; Author: Jay Xu
+;; Version: 0.1.0
+;; Keywords: tools, processes
+;; URL: https://github.com/jayxu/pi-mode.el
+;; License: GPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
 ;;; Commentary:
 ;; The pi-mode command surface: one transient prefix, `C-c C-''.
 

@@ -24,7 +24,7 @@
 (require 'compile)          ; compilation--message->loc etc. (batch needs it)
 (require 'pi-mode-keys)     ; standalone installer; does not require pi-mode
 
-(defgroup pi-mode nil
+(defgroup pi nil
   "Interface for the pi coding agent."
   :group 'tools
   :prefix "pi-mode-")
@@ -32,7 +32,7 @@
 (defcustom pi-mode-debug t
   "When non-nil, log pi-mode activity to the *pi-mode-debug* buffer."
   :type 'boolean
-  :group 'pi-mode)
+  :group 'pi)
 
 (defvar pi-mode-map
   (let ((map (make-sparse-keymap)))
@@ -43,7 +43,7 @@
   "Minor mode for buffers running the pi coding agent.
 
 \\{pi-mode-map}"
-  :group 'pi-mode
+  :group 'pi
   :lighter " Pi"
   :keymap pi-mode-map)
 
@@ -62,7 +62,7 @@
 Called with no arguments; must return a directory string.
 When nil, `project-current' is used with `default-directory' as fallback."
   :type '(choice (const :tag "Use project.el" nil) function)
-  :group 'pi-mode)
+  :group 'pi)
 
 (defun pi-mode--project-root ()
   "Return the project root for the current context."
@@ -82,17 +82,17 @@ When nil, `project-current' is used with `default-directory' as fallback."
 (defcustom pi-mode-cli-args '("--tui-mode" "regular")
   "Extra command-line arguments passed to pi at launch."
   :type '(repeat string)
-  :group 'pi-mode)
+  :group 'pi)
 
 (defcustom pi-mode-kill-buffer-on-exit nil
   "When non-nil, kill the pi buffer when the process exits."
   :type 'boolean
-  :group 'pi-mode)
+  :group 'pi)
 
 (defcustom pi-mode-confirm-kill t
   "When non-nil, confirm before killing a running pi session."
   :type 'boolean
-  :group 'pi-mode)
+  :group 'pi)
 
 (defvar pi-mode--sessions (make-hash-table :test #'equal)
   "Hash table of live pi sessions keyed by session id (buffer name).")
@@ -287,12 +287,12 @@ Rules: in-buffer self; sole; sole-visible; else MRU with echo."
   (locate-user-emacs-file "pi-mode-history")
   "File where the pi-mode prompt history is persisted."
   :type 'file
-  :group 'pi-mode)
+  :group 'pi)
 
 (defcustom pi-mode-prompt-history-length 200
   "Maximum number of entries kept in the prompt history."
   :type 'integer
-  :group 'pi-mode)
+  :group 'pi)
 
 (defvar pi-mode-prompt-history nil
   "Prompt history ring (newest first).")
@@ -375,7 +375,7 @@ Dedupe is membership-based so no prompt appears twice in the ring."
 With a prefix argument (C-u), a send switches to @file#Lstart-Lend
 reference mode instead."
   :type 'boolean
-  :group 'pi-mode)
+  :group 'pi)
 
 (defun pi-mode--embed-file (file content)
   "Wrap CONTENT in pi's <file name=...> embed convention."
@@ -503,7 +503,7 @@ the same end-then-begin order as `mark-defun'."
 (defcustom pi-mode-window-height 0.3
   "Height fraction for pi side windows."
   :type 'number
-  :group 'pi-mode)
+  :group 'pi)
 
 ;; Pi buffers dock in a bottom side window when displayed with
 ;; `display-buffer'.  `window-height' must be a NUMBER or a function
@@ -623,6 +623,14 @@ the same end-then-begin order as `mark-defun'."
 
 ;;;###autoload
 (define-key global-map (kbd "C-c C-'") #'pi-mode-menu)
+
+;;; Ghostel configuration (global — see design spec section 4.2)
+
+(add-to-list 'ghostel-keymap-exceptions "C-g")
+;; Rebuild the semi-char keymap so the change takes effect now; the
+;; defcustom :set normally does this only via customize.
+(when (fboundp 'ghostel--rebuild-semi-char-keymap)
+  (ghostel--rebuild-semi-char-keymap))
 
 (provide 'pi-mode)
 

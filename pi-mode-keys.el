@@ -19,7 +19,7 @@
 (defcustom pi-mode-agent-dir "~/.pi/agent"
   "pi's agent configuration directory."
   :type 'directory
-  :group 'pi-mode)
+  :group 'pi)
 
 (defconst pi-mode--keybindings-json
   (string-join

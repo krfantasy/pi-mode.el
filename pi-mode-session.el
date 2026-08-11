@@ -1,5 +1,13 @@
 ;;; pi-mode-session.el --- Session commands for pi-mode -*- lexical-binding: t; -*-
 
+;; Author: Jay Xu
+;; Version: 0.1.0
+;; Keywords: tools, processes
+;; URL: https://github.com/jayxu/pi-mode.el
+;; License: GPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
 ;;; Commentary:
 ;; Session management for pi-mode: continue, resume, fork, rename, stop,
 ;; list, and the session-directory seam.
@@ -13,7 +21,7 @@
   "Function returning the pi session directory for a project root.
 The test seam for session fixtures."
   :type 'function
-  :group 'pi-mode)
+  :group 'pi)
 
 (defun pi-mode--session-dir (root)
   "Return pi's session directory for project ROOT.
