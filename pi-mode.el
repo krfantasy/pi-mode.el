@@ -498,4 +498,10 @@ the same end-then-begin order as `mark-defun'."
       (pi-mode--send-text session text))))
 
 (provide 'pi-mode)
+
+;; Require after `provide' so that pi-mode-session.el's own
+;; `(require 'pi-mode)' resolves via `featurep' — a require before the
+;; provide would re-enter pi-mode.el mid-load ("Recursive load").
+(require 'pi-mode-session)
+
 ;;; pi-mode.el ends here

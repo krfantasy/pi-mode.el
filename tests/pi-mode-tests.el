@@ -455,5 +455,92 @@
       (should (equal (pi-mode--error-at-point)
                      '("/tmp/broken.ts" 12 5 nil))))))
 
+;;; Task 6: session commands
+
+(ert-deftest pi-mode-test-session-dir ()
+  "Session dir mirrors pi's --path-- layout and honors PI_CODING_AGENT_DIR."
+  (let ((agent-dir (make-temp-file "pi-agent-" t)))
+    (unwind-protect
+        (cl-letf (((getenv "PI_CODING_AGENT_DIR") agent-dir))
+          (should (equal (pi-mode--session-dir "/Users/me/proj")
+                         (expand-file-name "--Users-me-proj--"
+                                           (expand-file-name "sessions" agent-dir)))))
+      (delete-directory agent-dir t))))
+
+(ert-deftest pi-mode-test-session-files ()
+  (let ((dir (make-temp-file "pi-sessions-" t)))
+    (unwind-protect
+        (progn
+          (write-region "" nil (expand-file-name "a.jsonl" dir))
+          (write-region "" nil (expand-file-name "b.jsonl" dir))
+          (write-region "" nil (expand-file-name "ignore.txt" dir))
+          (let ((pi-mode-session-dir-function (lambda (_root) dir)))
+            (should (= (length (pi-mode--session-files "/tmp/x")) 2))))
+      (delete-directory dir t))))
+
+(ert-deftest pi-mode-test-session-continue-launch ()
+  "continue launches pi -c in a new buffer."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+             ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+             ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+             ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil)))
+     (let ((session (pi-mode-session-continue)))
+       (unwind-protect
+           (let ((call (assq 'ghostel-exec pi-mode-test--calls)))
+             (should call)
+             (should (member "-c" (nth 2 (cdr call)))))
+         (pi-mode--unregister-session (pi-mode-session-id session))
+         (when (buffer-live-p (pi-mode-session-buffer session))
+           (kill-buffer (pi-mode-session-buffer session)))
+         (when (process-live-p (pi-mode-session-process session))
+           (delete-process (pi-mode-session-process session))))))))
+
+(ert-deftest pi-mode-test-session-rename-sends ()
+  "rename sends /name and updates the struct."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rn]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[rn]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (pi-mode-session-rename "refactor"))
+           (should (equal (pi-mode-session-name s) "refactor"))
+           (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
+             (should call)
+             (should (equal (car (cdr call)) "/name refactor"))))
+       (pi-mode--unregister-session "*pi[rn]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-stop-prompts ()
+  "stop requires confirmation then deletes the process."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[st]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[st]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+               (pi-mode-session-stop))
+             (should (not (process-live-p p))))
+           ;; second half: decline with a fresh live process
+           (let ((p2 (pi-mode-test--fake-process)))
+             (setf (pi-mode-session-process s) p2)
+             (pi-mode--register-session s)
+             (with-current-buffer b
+               (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) nil)))
+                 (pi-mode-session-stop))
+               (should (process-live-p p2))
+               (delete-process p2)))
+           (pi-mode--unregister-session "*pi[st]*"))
+       (kill-buffer b)
+       (ignore-errors (delete-process p))))))
+
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here
