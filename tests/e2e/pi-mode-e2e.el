@@ -26,13 +26,17 @@
   "Temp agent dirs created by the harness, cleaned up at teardown.")
 
 (defun pi-mode-e2e--wait (proc buffer predicate &optional timeout)
-  "Poll PREDICATE (called in BUFFER) until true or TIMEOUT seconds pass.
+  "Poll PREDICATE until true or TIMEOUT seconds pass.
+Evaluates PREDICATE in BUFFER while it is live; once the buffer dies,
+evaluates it without a buffer so the death itself can be awaited.
 Pumps PROCESS output and ghostel's render timer; on timeout prints the
 buffer tail for diagnosis and returns nil."
   (let ((deadline (+ (float-time) (or timeout 40))))
     (catch 'done
       (while (< (float-time) deadline)
-        (when (with-current-buffer buffer (funcall predicate))
+        (when (if (buffer-live-p buffer)
+                  (with-current-buffer buffer (funcall predicate))
+                (ignore-errors (funcall predicate)))
           (throw 'done t))
         (accept-process-output proc 0.4)
         (sleep-for 0.05))
@@ -244,6 +248,27 @@ e2e model endpoint and records the round in the session JSONL."
                     (lambda ()
                       (> (length (pi-mode-e2e--buffer-text buffer)) 300))
                     10)))
+      (delete-directory project-root t))))
+
+(ert-deftest pi-mode-e2e-test-exit-kills-buffer ()
+  "Exiting pi (ctrl+d on empty input) ends the process AND kills the buffer."
+  (pi-mode-e2e-server-start)
+  (let ((project-root (make-temp-file "pi-e2e-proj-" t)))
+    (unwind-protect
+        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+          (should (pi-mode-e2e--wait-ready process buffer project-root))
+          (with-current-buffer buffer
+            (ghostel-send-key "d" "ctrl"))
+          ;; Real exit: process dies, cleanup unregisters and kills the
+          ;; buffer (claude-code-ide behavior, pi-mode-kill-buffer-on-exit).
+          (should (pi-mode-e2e--wait process buffer
+                    (lambda ()
+                      (or (not (process-live-p process))
+                          (not (buffer-live-p buffer))))
+                    20))
+          (should-not (process-live-p process))
+          (should-not (buffer-live-p buffer))
+          (should-not (pi-mode--session-by-buffer buffer)))
       (delete-directory project-root t))))
 
 (ert-deftest pi-mode-e2e-test-window-side-and-panel ()

@@ -82,8 +82,11 @@ When nil, `project-current' is used with `default-directory' as fallback."
   :type '(repeat string)
   :group 'pi)
 
-(defcustom pi-mode-kill-buffer-on-exit nil
-  "When non-nil, kill the pi buffer when the process exits."
+(defcustom pi-mode-kill-buffer-on-exit t
+  "When non-nil, kill the pi buffer when the process exits.
+Matches claude-code-ide.el: exiting a session also removes its
+terminal buffer.  Set to nil to keep the buffer (e.g. to review
+scrollback) after the process ends."
   :type 'boolean
   :group 'pi)
 
@@ -191,7 +194,7 @@ receives it trimmed."
       (let ((buffer (pi-mode-session-buffer session)))
         (pi-mode--unregister-session (pi-mode-session-id session))
         (run-hook-with-args 'pi-mode-on-exit-hook buffer (string-trim event))
-        (when pi-mode-kill-buffer-on-exit
+        (when (and pi-mode-kill-buffer-on-exit (buffer-live-p buffer))
           (kill-buffer buffer))))))
 
 (defun pi-mode--make-session (project-root &optional name)

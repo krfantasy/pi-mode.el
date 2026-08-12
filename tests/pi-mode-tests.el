@@ -147,9 +147,34 @@
             (pi-mode--attach-sentinel p)
             (funcall (process-sentinel p) p "finished\n")
             (should (equal stashed-run "finished\n"))
-            (should (equal hook-args (list b "finished")))))
+            (should (equal hook-args (list b "finished")))
+            ;; claude-code-ide behavior: exit also kills the buffer.
+            (should-not (buffer-live-p b))
+            (should-not (pi-mode--session-by-buffer b))))
       (kill-buffer b) (delete-process p)
       (pi-mode--unregister-session "*pi[sentinel]*"))))
+
+(ert-deftest pi-mode-test-exit-kills-buffer-default ()
+  "The default matches claude-code-ide.el: exit kills the session buffer.
+`pi-mode-kill-buffer-on-exit' defaults to t; nil keeps the buffer."
+  (should pi-mode-kill-buffer-on-exit)
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[exitk]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[exitk]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (let ((pi-mode-kill-buffer-on-exit nil))
+             (pi-mode--cleanup-session p "finished\n")
+             (should (buffer-live-p b)))
+           (setf (pi-mode-session-cleanup-done s) nil)
+           (pi-mode--register-session s)
+           (pi-mode--cleanup-session p "finished\n")
+           (should-not (buffer-live-p b)))
+       (when (buffer-live-p b) (kill-buffer b))
+       (pi-mode--unregister-session "*pi[exitk]*")))))
 
 (ert-deftest pi-mode-test-launch-failure-leaves-no-session ()
   "A failed launch (missing pi) registers nothing and leaves no buffer."
