@@ -554,7 +554,7 @@ most recently used one for target resolution."
     (unless (pi-mode-session-cleanup-done session)
       (setf (pi-mode-session-last-used session) (current-time)))))
 
-(when (boundp 'tab-bar-tab-post-open-functions)
+(with-eval-after-load 'tab-bar
   (add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows))
 (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
 
