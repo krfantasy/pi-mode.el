@@ -814,6 +814,72 @@ list so the action unwraps to a function list."
        (ignore-errors (delete-process p1))
        (ignore-errors (delete-process p2))))))
 
+(ert-deftest pi-mode-test-strip-new-tab ()
+  "New-tab stripping removes pi windows from the fresh tab."
+  ;; pi-mode-confirm-kill nil: the kill-buffer guard would prompt (and
+  ;; fail on stdin EOF in batch), masking the real test condition
+  (let* ((pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[strip]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[strip]*" :buffer b :process p
+                                  :project-root "/tmp/")))
+    (unwind-protect
+        (progn
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (get-buffer-window b))
+          (pi-mode--strip-new-tab-pi-windows)
+          (should-not (get-buffer-window b)))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-strip-new-tab-leaves-others ()
+  "New-tab stripping leaves non-pi windows alone."
+  (let ((b (get-buffer-create "*plain*")))
+    (unwind-protect
+        (progn
+          (display-buffer b)
+          (pi-mode--strip-new-tab-pi-windows)
+          (should (get-buffer-window b)))
+      (kill-buffer b))))
+
+(ert-deftest pi-mode-test-note-window-selection-stamps-mru ()
+  "Selecting a pi window makes its session most-recently-used."
+  (let* ((pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[mru]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[mru]*" :buffer b :process p
+                                  :project-root "/tmp/"
+                                  :last-used (time-subtract (current-time) 5))))
+    (unwind-protect
+        (progn
+          ;; pi-mode--note-window-selection resolves sessions through the
+          ;; pi-mode--sessions registry, so the session must be registered
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (let ((win (display-buffer b)))
+            (select-window win)
+            (pi-mode--note-window-selection (selected-frame))
+            (should (time-less-p (time-subtract (current-time) 5)
+                                 (pi-mode-session-last-used s)))))
+      (pi-mode--unregister-session "*pi[mru]*")
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-note-window-selection-ignores-others ()
+  "Selecting a non-pi window does not touch session MRU."
+  (let* ((pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*plain*"))
+         (p (pi-mode-test--fake-process))
+         (sb (get-buffer-create "*pi[mru2]*"))
+         (s (make-pi-mode-session :id "*pi[mru2]*" :buffer sb :process p
+                                  :project-root "/tmp/" :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (let ((old (pi-mode-session-last-used s)))
+            (select-window (display-buffer b))
+            (pi-mode--note-window-selection (selected-frame))
+            (should (equal old (pi-mode-session-last-used s)))))
+      (kill-buffer sb) (kill-buffer b) (delete-process p))))
+
 ;;; Configure commands
 
 (ert-deftest pi-mode-test-configure-model ()

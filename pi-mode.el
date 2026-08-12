@@ -529,6 +529,35 @@ contract, preserved for `pi-mode-test-window-commands-no-error')."
           (message "pi panel shown")
           :shown)))))
 
+(defun pi-mode--strip-new-tab-pi-windows (&rest _)
+  "Remove cloned pi side windows from a freshly created tab.
+With `tab-bar-new-tab-choice' t a new tab clones the previous tab's
+layout, duplicating session windows across tabs.  New tabs start
+pi-free instead; summon sessions there explicitly."
+  (dolist (window (window-list))
+    (when (and (window-live-p window)
+               (pi-mode--session-buffer-p (window-buffer window)))
+      (unless (ignore-errors (delete-window window) t)
+        ;; The sole window of the tab cannot be deleted — show another
+        ;; buffer in it instead.
+        (when (window-live-p window)
+          (switch-to-prev-buffer window 'bury)
+          (when (pi-mode--session-buffer-p (window-buffer window))
+            (set-window-buffer window (get-buffer-create "*scratch*"))))))))
+
+(defun pi-mode--note-window-selection (frame)
+  "Stamp MRU state when a pi window gets selected in FRAME.
+Without this, clicking into a visible session would not make it the
+most recently used one for target resolution."
+  (when-let* ((window (frame-selected-window frame))
+              (session (pi-mode--session-by-buffer (window-buffer window))))
+    (unless (pi-mode-session-cleanup-done session)
+      (setf (pi-mode-session-last-used session) (current-time)))))
+
+(when (boundp 'tab-bar-tab-post-open-functions)
+  (add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows))
+(add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
+
 ;;;###autoload
 (defun pi-mode-show-all ()
   "Display buffers of all live pi sessions."
