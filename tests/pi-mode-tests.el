@@ -10,6 +10,7 @@
 (require 'project)          ; project-root is not autoloaded; the cl-letf
                             ; mock of project-current bypasses its autoload
 (require 'pi-mode)
+(require 'pi-mode-status)
 
 ;; tab-bar.el is preloaded in Emacs 30 but not in 28/29; the
 ;; tab-isolation tests bind it via cl-letf, so keep it bound.
@@ -944,6 +945,110 @@ list so the action unwraps to a function list."
                           (list (list "/tmp/" '("--tui-mode" "fullscreen"))
                                 (list "/tmp/" '("--tui-mode" "regular"))))))
        (pi-mode--unregister-session "*pi[tu]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-cli-version-found ()
+  "pi-mode--cli-version runs pi --version and caches the result."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (cmd) (when (equal cmd "pi") "/usr/bin/pi")))
+            ((symbol-function 'call-process)
+             (lambda (&rest args)
+               (let ((dest (nth 2 args)))
+                 (when (or (eq dest t) (bufferp dest))
+                   (with-current-buffer (if (bufferp dest) dest (current-buffer))
+                     (insert "0.84.1\n")))
+                 0))))
+    (let ((pi-mode--cli-cache nil))
+      (should (equal (pi-mode--cli-version) "0.84.1"))
+      (should (equal pi-mode--cli-cache '("/usr/bin/pi" . "0.84.1"))))))
+
+(ert-deftest pi-mode-test-cli-version-missing ()
+  "pi-mode--cli-version is nil when the CLI is absent."
+  (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
+    (let ((pi-mode--cli-cache nil))
+      (should-not (pi-mode--cli-version))
+      (should-not pi-mode--cli-cache))))
+
+(ert-deftest pi-mode-test-cli-status-strings ()
+  "pi-mode--cli-status formats found and missing states."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (cmd) (when (equal cmd "pi") "/usr/bin/pi")))
+            ((symbol-function 'call-process)
+             (lambda (&rest args)
+               (when (eq (nth 2 args) t) (insert "0.84.1\n"))
+               0)))
+    (let ((pi-mode--cli-cache nil))
+      (should (equal (pi-mode--cli-status) "pi 0.84.1 found at /usr/bin/pi")))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
+      (should (equal (pi-mode--cli-status) "pi CLI not found in exec-path")))))
+
+(ert-deftest pi-mode-test-check-status-message ()
+  "pi-mode-check-status messages the CLI status."
+  (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) "/usr/bin/pi"))
+            ((symbol-function 'call-process)
+             (lambda (&rest args)
+               (when (eq (nth 2 args) t) (insert "0.84.1\n"))
+               0))
+            ((symbol-function 'message)
+             (lambda (fmt &rest args) (apply #'format fmt args))))
+    (let ((pi-mode--cli-cache nil))
+      (should (equal (pi-mode-check-status)
+                     "pi 0.84.1 found at /usr/bin/pi")))))
+
+(ert-deftest pi-mode-test-version-info-buffer ()
+  "pi-mode-show-version-info fills *pi-mode-status*."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[vi]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[vi]*" :buffer b :process p
+                                   :project-root "/tmp/vi-proj/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
+             (pi-mode-show-version-info)
+             (let ((info (with-current-buffer "*pi-mode-status*" (buffer-string))))
+               (should (string-match-p "pi-mode" info))
+               (should (string-match-p "Emacs" info))
+               (should (string-match-p "\\*pi\\[vi\\]*" info))
+               (should (string-match-p "vi-proj" info))
+               (should (string-match-p "not found" info))))
+           (should (buffer-local-value 'buffer-read-only
+                                       (get-buffer "*pi-mode-status*"))))
+       (pi-mode--unregister-session "*pi[vi]*")
+       (kill-buffer b) (delete-process p)
+       (when (get-buffer "*pi-mode-status*") (kill-buffer "*pi-mode-status*"))))))
+
+(ert-deftest pi-mode-test-session-status-none ()
+  "Header shows the no-sessions state."
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/empty-proj/")))
+    (should (string-match-p "No active sessions" (pi-mode--session-status)))))
+
+(ert-deftest pi-mode-test-session-status-with-sessions ()
+  "Header shows the current project's sessions."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[hs]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[hs]*" :buffer b :process p
+                                   :project-root "/tmp/hs-proj/" :name "refactor")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/hs-proj/")))
+             (let ((status (pi-mode--session-status)))
+               (should (string-match-p "hs-proj" status))
+               (should (string-match-p "refactor" status))
+               (should (string-match-p "1 session" status))))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/elsewhere/")))
+             (should (string-match-p "running elsewhere" (pi-mode--session-status))))
+           ;; No sessions at all
+           (pi-mode--unregister-session "*pi[hs]*")
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/hs-proj/")))
+             (should (string-match-p "No active sessions" (pi-mode--session-status)))))
+       (pi-mode--unregister-session "*pi[hs]*")
        (kill-buffer b) (delete-process p)))))
 
 (provide 'pi-mode-tests)
