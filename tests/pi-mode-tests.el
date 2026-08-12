@@ -483,6 +483,8 @@
 (ert-deftest pi-mode-test-menu-defined ()
   "The transient menu and its suffix commands exist."
   (should (commandp 'pi-mode-menu))
+  (should (commandp 'pi-mode-config-menu))
+  (should (commandp 'pi-mode-debug-menu))
   (dolist (cmd '(pi-mode-session-continue pi-mode-session-resume
                  pi-mode-session-fork pi-mode-session-rename
                  pi-mode-session-stop pi-mode-session-stop-all
@@ -492,7 +494,7 @@
                  pi-mode-show-all pi-mode-toggle-recent
                  pi-mode-interrupt pi-mode-configure-model
                  pi-mode-configure-thinking pi-mode-configure-tui-mode
-                 pi-mode-configure-cli-args pi-mode-install-keybindings))
+                 pi-mode-configure-cli-args))
     (should (commandp cmd))))
 
 (ert-deftest pi-mode-test-global-menu-binding ()
@@ -568,31 +570,7 @@ list so the action unwraps to a function list."
   (should-error (pi-mode-show-all) :type 'user-error)
   (should (equal (pi-mode-toggle-panel) :hidden)))
 
-;;; Task 8: keybindings preset + Configure commands
-
-(ert-deftest pi-mode-test-keys-json-valid ()
-  "The preset parses as JSON and contains the required remaps."
-  ;; json-parse-string defaults :array-type to vector; ask for lists to
-  ;; match the expectations below.
-  (let ((data (json-parse-string pi-mode--keybindings-json :array-type 'list)))
-    (should (equal (gethash "app.clear" data) '("ctrl+shift+c")))
-    (should (equal (gethash "app.message.copy" data) '("ctrl+shift+x")))
-    (should (equal (gethash "tui.editor.deleteToLineStart" data) '("ctrl+shift+u")))
-    (should (equal (gethash "tui.editor.historyPrevious" data) "ctrl+p"))
-    (should (equal (gethash "app.model.cycleForward" data) "ctrl+alt+p"))))
-
-(ert-deftest pi-mode-test-keys-install ()
-  "Install writes the preset; existing file gets a .bak backup."
-  (let ((pi-mode-agent-dir (make-temp-file "pi-agent-" t)))
-    (unwind-protect
-        (progn
-          (write-region "old" nil (pi-mode--keybindings-path))
-          (pi-mode-install-keybindings t) ; force: no prompt
-          (should (file-exists-p (concat (pi-mode--keybindings-path) ".bak")))
-          (with-temp-buffer
-            (insert-file-contents (pi-mode--keybindings-path))
-            (should (string-match-p "ctrl\\+shift\\+c" (buffer-string)))))
-      (delete-directory pi-mode-agent-dir t))))
+;;; Configure commands
 
 (ert-deftest pi-mode-test-configure-model ()
   "pi-mode-configure-model sends /model."

@@ -20,35 +20,48 @@
 
 ;;;###autoload
 (transient-define-prefix pi-mode-menu ()
-  "Command menu for pi-mode sessions."
+  "Command menu for pi-mode sessions.
+Key layout follows claude-code-ide.el: session s/c/r/q/Q/R/l,
+navigation b/w/W/a, interaction i/f/e, submenus C/d."
   [:description "pi-mode"
    :class transient-columns
    ["Session"
     ("s" "Start" pi-mode-start)
     ("c" "Continue" pi-mode-session-continue)
     ("r" "Resume" pi-mode-session-resume)
-    ("f" "Fork" pi-mode-session-fork)
-    ("n" "Rename" pi-mode-session-rename)
+    ("F" "Fork" pi-mode-session-fork)
+    ("R" "Rename" pi-mode-session-rename)
     ("q" "Stop" pi-mode-session-stop)
     ("Q" "Stop all" pi-mode-session-stop-all)
     ("l" "List sessions" pi-mode-list-sessions)]
-   ["Send"
-    ("r" "Region" pi-mode-send-region)
-    ("f" "File" pi-mode-send-file)]
-   ["Navigate"
+   ["Navigation"
     ("b" "Switch buffer" pi-mode-switch-buffer)
     ("w" "Toggle panel" pi-mode-toggle-panel)
-    ("W" "Show all" pi-mode-show-all)
-    ("t" "Toggle recent" pi-mode-toggle-recent)]
-   ["Debug"
-    ("l" "Log buffer" pi-mode-show-debug)
-    ("d" "Debug on/off" pi-mode-toggle-debug)]
+    ("W" "Toggle recent" pi-mode-toggle-recent)
+    ("a" "Show all" pi-mode-show-all)]
+   ["Interaction"
+    ("i" "Insert region" pi-mode-send-region)
+    ("f" "Insert file ref" pi-mode-send-file)
+    ("e" "Interrupt" pi-mode-interrupt)]
+   ["Submenus"
+    ("C" "Configuration" pi-mode-config-menu)
+    ("d" "Debugging" pi-mode-debug-menu)]])
+
+(transient-define-prefix pi-mode-config-menu ()
+  "pi-mode configuration menu."
+  [:description "pi-mode Configuration"
    ["Configure"
     ("m" "Model" pi-mode-configure-model)
     ("T" "Thinking" pi-mode-configure-thinking)
     ("u" "TUI mode" pi-mode-configure-tui-mode)
-    ("k" "Install keybindings" pi-mode-install-keybindings)
-    ("c" "CLI args" pi-mode-configure-cli-args)]])
+    ("x" "CLI args" pi-mode-configure-cli-args)]])
+
+(transient-define-prefix pi-mode-debug-menu ()
+  "pi-mode debugging menu."
+  [:description "pi-mode Debug"
+   ["Debug"
+    ("l" "Log buffer" pi-mode-show-debug)
+    ("d" "Debug on/off" pi-mode-toggle-debug)]])
 
 (provide 'pi-mode-menu)
 ;;; pi-mode-menu.el ends here

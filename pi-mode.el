@@ -21,7 +21,6 @@
 (require 'project)          ; project-root is not autoloaded
 (require 'ghostel)
 (require 'transient)
-(require 'pi-mode-keys)     ; standalone installer; does not require pi-mode
 
 (defgroup pi nil
   "Interface for the pi coding agent."
