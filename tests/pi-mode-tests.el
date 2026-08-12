@@ -11,6 +11,10 @@
                             ; mock of project-current bypasses its autoload
 (require 'pi-mode)
 
+;; tab-bar.el is preloaded in Emacs 30 but not in 28/29; the
+;; tab-isolation tests bind it via cl-letf, so keep it bound.
+(defvar tab-bar-mode nil)
+
 (defvar pi-mode-test--calls nil
   "Alist of recorded ghostel calls: ((FUNCTION . ARGS)...).")
 
@@ -683,6 +687,130 @@ list so the action unwraps to a function list."
   (should-error (pi-mode-toggle-recent) :type 'user-error)
   (should-error (pi-mode-show-all) :type 'user-error)
   (should (equal (pi-mode-toggle-panel) :hidden)))
+
+(ert-deftest pi-mode-test-hidden-panel-set-get ()
+  "Hidden sets are stored per current-tab key; nil drops the entry."
+  (unwind-protect
+      (progn
+        (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+        (should-not (pi-mode--hidden-panel-get))
+        (pi-mode--hidden-panel-set '(s1 s2))
+        (should (equal (pi-mode--hidden-panel-get) '(s1 s2)))
+        (pi-mode--hidden-panel-set nil)
+        (should-not (pi-mode--hidden-panel-get)))
+    (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
+
+(ert-deftest pi-mode-test-hidden-panel-tab-isolation ()
+  "Hidden sets are isolated per tab."
+  (unwind-protect
+      (progn
+        (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+        (cl-letf (((symbol-function 'tab-bar--current-tab)
+                   (lambda () '((name . "tab-a"))))
+                  ((symbol-value 'tab-bar-mode) t))
+          (pi-mode--hidden-panel-set '(s1))
+          (should (equal (pi-mode--hidden-panel-get) '(s1))))
+        (cl-letf (((symbol-function 'tab-bar--current-tab)
+                   (lambda () '((name . "tab-b"))))
+                  ((symbol-value 'tab-bar-mode) t))
+          (should-not (pi-mode--hidden-panel-get)))
+        (cl-letf (((symbol-function 'tab-bar--current-tab)
+                   (lambda () '((name . "tab-a"))))
+                  ((symbol-value 'tab-bar-mode) t))
+          (should (equal (pi-mode--hidden-panel-get) '(s1)))))
+    (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
+
+(ert-deftest pi-mode-test-hidden-panel-prunes-dead-tabs ()
+  "Writing a new entry drops keys for tabs that no longer exist."
+  (unwind-protect
+      (cl-letf (((symbol-function 'tab-bar-tabs)
+                 (lambda (&optional _frame)
+                   ;; real tab-bar-tabs shape: (TAB-ID (name . NAME) ...)
+                   '((1 (name . "live-1")) (2 (name . "live-2"))))))
+        (set-frame-parameter nil 'pi-mode-hidden-panel
+                             '(("dead-tab" . (s1)) ("live-1" . (s-old))))
+        (pi-mode--hidden-panel-set '(s2))
+        (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
+          (should (assoc "none" entries))       ; current tab (batch fallback)
+          (should (assoc "live-1" entries))     ; still live
+          (should-not (assoc "dead-tab" entries)) ; pruned
+          ;; current-tab write also replaced the old "live-1" entry only if
+          ;; the current key equals it — batch key is "none", so no clash
+          (should (equal (cdr (assoc "none" entries)) '(s2)))))
+    (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
+
+(ert-deftest pi-mode-test-toggle-panel-roundtrip ()
+  "toggle-panel hides visible sessions and restores the same set."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[t1]*"))
+          (b2 (get-buffer-create "*pi[t2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[t1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/" :window-slot 0
+                                    ;; distinct timestamps: active-sessions sorts
+                                    ;; most-recent-first (s2), keeping the
+                                    ;; expected set order deterministic
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[t2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/" :window-slot 1
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (display-buffer b1)
+           (display-buffer b2)
+           (should (get-buffer-window b1))
+           (should (get-buffer-window b2))
+           (should (equal (pi-mode-toggle-panel) :hidden))
+           (should-not (get-buffer-window b1))
+           (should-not (get-buffer-window b2))
+           (should (equal (pi-mode--hidden-panel-get) (list s2 s1)))
+           (should (equal (pi-mode-toggle-panel) :shown))
+           (should (get-buffer-window b1))
+           (should (get-buffer-window b2)))
+       (pi-mode--unregister-session "*pi[t1]*")
+       (pi-mode--unregister-session "*pi[t2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
+
+(ert-deftest pi-mode-test-toggle-panel-restore-skips-dead ()
+  "Restore skips remembered sessions whose process died."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[td1]*"))
+          (b2 (get-buffer-create "*pi[td2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[td1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/" :window-slot 0
+                                    :last-used (current-time)))
+          (s2 (make-pi-mode-session :id "*pi[td2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/" :window-slot 1
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (display-buffer b1)
+           (pi-mode-toggle-panel)               ; hide s1, remembered set = (s1)
+           (delete-process p1)                  ; s1 dies while hidden
+           ;; stash s2 in the hidden set manually to exercise the filter
+           (pi-mode--hidden-panel-set (list s2))
+           (should (equal (pi-mode-toggle-panel) :shown))
+           (should (get-buffer-window b2))      ; s2 restored
+           (should-not (get-buffer-window b1))) ; s1 dead — window cannot exist
+       (pi-mode--unregister-session "*pi[td1]*")
+       (pi-mode--unregister-session "*pi[td2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (ignore-errors (delete-process p1))
+       (ignore-errors (delete-process p2))))))
 
 ;;; Configure commands
 

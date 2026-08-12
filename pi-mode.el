@@ -464,27 +464,70 @@ visible side by side instead of evicting each other."
 (add-to-list 'display-buffer-alist
              (list #'pi-mode--session-buffer-p #'pi-mode--display-buffer))
 
-(defvar pi-mode--panel-hidden nil)
+(defun pi-mode--current-tab-key ()
+  "Tab-bar tab name for the current tab, or \"none\".
+Tab-bar-mode must be enabled: `tab-bar--current-tab' is callable even
+when it is not (tab-bar.el is preloaded in Emacs 30) and then returns
+a buffer-dependent synthetic tab name, which would fragment the panel
+state for users without tab-bar-mode."
+  (or (and (bound-and-true-p tab-bar-mode)
+           (fboundp 'tab-bar--current-tab)
+           (alist-get 'name (tab-bar--current-tab)))
+      "none"))
+
+(defun pi-mode--hidden-panel-get ()
+  "Hidden session set for the current tab, or nil."
+  (cdr (assoc (pi-mode--current-tab-key)
+              (frame-parameter nil 'pi-mode-hidden-panel))))
+
+(defun pi-mode--hidden-panel-set (sessions)
+  "Remember SESSIONS as the current tab's hidden set.
+A nil SESSIONS drops the entry.  Entries for tabs that no longer
+exist are pruned on the way."
+  (let* ((key (pi-mode--current-tab-key))
+         (live-tabs (and (fboundp 'tab-bar-tabs)
+                         (mapcar (lambda (tab) (alist-get 'name (cdr tab)))
+                                 (tab-bar-tabs))))
+         (rest (cl-remove-if (lambda (entry)
+                               (or (equal (car entry) key)
+                                   (and live-tabs
+                                        (not (member (car entry) live-tabs)))))
+                             (frame-parameter nil 'pi-mode-hidden-panel))))
+    (set-frame-parameter nil 'pi-mode-hidden-panel
+                         (if sessions
+                             (cons (cons key sessions) rest)
+                           rest))))
 
 ;;;###autoload
 (defun pi-mode-toggle-panel ()
-  "Hide or restore the pi side window."
+  "Hide or restore the pi side windows in the current tab.
+When any pi session window is visible, hide them all and remember
+the set for this tab; otherwise restore the remembered set (skipping
+dead sessions), falling back to the most recently used session.
+With no live sessions, reports the panel as hidden (legacy
+contract, preserved for `pi-mode-test-window-commands-no-error')."
   (interactive)
-  (if pi-mode--panel-hidden
-      (progn
-        (when-let ((session (car (pi-mode--active-sessions))))
-          (display-buffer (pi-mode-session-buffer session)))
-        (setq pi-mode--panel-hidden nil)
-        (message "pi panel shown")
-        :shown)
-    (let ((killed nil))
-      (dolist (win (window-list))
-        (when (string-match-p "\\*pi\\[" (buffer-name (window-buffer win)))
-          (delete-window win)
-          (setq killed t)))
-      (setq pi-mode--panel-hidden killed)
-      (message "pi panel hidden")
-      :hidden)))
+  (let* ((sessions (pi-mode--active-sessions))
+         (visible (pi-mode--visible-sessions sessions)))
+    (if (null sessions)
+        (progn (message "pi panel hidden") :hidden)
+      (if visible
+          (progn
+            (pi-mode--hidden-panel-set visible)
+            (dolist (win (window-list))
+              (when (pi-mode--session-buffer-p (window-buffer win))
+                (ignore-errors (delete-window win))))
+            (message "pi panel hidden")
+            :hidden)
+        (let* ((hidden (pi-mode--hidden-panel-get))
+               (restore (or (cl-remove-if-not #'pi-mode--session-live-p hidden)
+                            (let ((sessions (pi-mode--active-sessions)))
+                              (and sessions (list (pi-mode--mru-session sessions)))))))
+          (pi-mode--hidden-panel-set nil)
+          (dolist (session restore)
+            (display-buffer (pi-mode-session-buffer session)))
+          (message "pi panel shown")
+          :shown)))))
 
 ;;;###autoload
 (defun pi-mode-show-all ()
