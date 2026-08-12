@@ -1,3 +1,4 @@
 .pi-subagents/
 .superpowers/
 *.elc
+.worktrees
