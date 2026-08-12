@@ -231,6 +231,7 @@ launch fails the scratch buffer is removed."
         (let* ((buffer (pi-mode-session-buffer session))
                (process (pi-mode--ghostel-launch buffer project-root args)))
           (setf (pi-mode-session-process session) process)
+          (setf (pi-mode-session-window-slot session) (pi-mode--assign-window-slot))
           (pi-mode--register-session session)
           (pi-mode--attach-sentinel process)
           (pop-to-buffer buffer)
@@ -522,22 +523,75 @@ the same end-then-begin order as `mark-defun'."
 
 ;;; Window commands
 
+(defcustom pi-mode-window-side 'bottom
+  "Frame side where pi buffers are displayed in a side window."
+  :type '(choice (const :tag "Bottom" bottom)
+                 (const :tag "Top" top)
+                 (const :tag "Left" left)
+                 (const :tag "Right" right))
+  :group 'pi)
+
 (defcustom pi-mode-window-height 0.3
-  "Height fraction for pi side windows."
+  "Size of pi side windows when `pi-mode-window-side' is top or bottom.
+An integer >= 1 is a height in lines; a float between 0 and 1 is a
+fraction of the frame height."
   :type 'number
   :group 'pi)
 
-;; Pi buffers dock in a bottom side window when displayed with
-;; `display-buffer'.  `window-height' must be a NUMBER or a function
-;; that resizes the window itself (a function's return value is ignored
-;; in Emacs 28+); the backquote splices the defcustom's numeric value at
-;; load time, so changing `pi-mode-window-height' afterwards requires
-;; re-adding this entry.
-(add-to-list 'display-buffer-alist
-             `("\\*pi\\["
-               (display-buffer-in-side-window)
-               (side . bottom)
-               (window-height . ,pi-mode-window-height)))
+(defcustom pi-mode-window-width 0.4
+  "Size of pi side windows when `pi-mode-window-side' is left or right.
+An integer >= 1 is a width in columns; a float between 0 and 1 is a
+fraction of the frame width."
+  :type 'number
+  :group 'pi)
+
+(defun pi-mode--display-args (buffer)
+  "Return (SIDE SLOT SIZE-KEY SIZE-VALUE) for displaying BUFFER.
+SIDE is `pi-mode-window-side'; SLOT is the session's `window-slot'
+(or 0); SIZE-KEY is `window-width' on left/right sides and
+`window-height' otherwise, with the matching defcustom value.
+Reading the customization at display time keeps changes live without
+re-adding a `display-buffer-alist' entry."
+  (let* ((side pi-mode-window-side)
+         (slot (or (when-let ((session (pi-mode--session-by-buffer buffer)))
+                     (pi-mode-session-window-slot session))
+                   0))
+         (left-or-right (memq side '(left right))))
+    (list side slot
+          (if left-or-right 'window-width 'window-height)
+          (if left-or-right pi-mode-window-width pi-mode-window-height))))
+
+(defun pi-mode--display-buffer (buffer _alist)
+  "Display BUFFER in a side window per `pi-mode-window-side' and size.
+Each pi session occupies its own slot, so several sessions can be
+visible side by side instead of evicting each other."
+  (let* ((args (pi-mode--display-args buffer))
+         (side (nth 0 args))
+         (slot (nth 1 args))
+         (size-key (nth 2 args))
+         (size-value (nth 3 args)))
+    (let ((display-buffer-alist
+           `((,(regexp-quote (buffer-name buffer))
+              (display-buffer-in-side-window)
+              (side . ,side)
+              (slot . ,slot)
+              (,size-key . ,size-value)))))
+      (display-buffer buffer))))
+
+(defun pi-mode--assign-window-slot ()
+  "Return the smallest side-window slot not used by a live session."
+  (let ((used (cl-loop for s in (pi-mode--active-sessions)
+                       for slot = (pi-mode-session-window-slot s)
+                       when slot collect slot))
+        (slot 0))
+    (while (memq slot used)
+      (cl-incf slot))
+    slot))
+
+;; Pi buffers dock in a side window; the action function reads the
+;; window customization at display time, so changing the defcustoms
+;; takes effect immediately.
+(add-to-list 'display-buffer-alist '("\\*pi\\[" . pi-mode--display-buffer))
 
 (defvar pi-mode--panel-hidden nil)
 

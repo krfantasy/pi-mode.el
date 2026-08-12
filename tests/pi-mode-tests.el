@@ -635,6 +635,48 @@
   (should (eq (lookup-key (current-global-map) (kbd "C-c C-'"))
               #'pi-mode-menu)))
 
+(ert-deftest pi-mode-test-assign-window-slot ()
+  "Slot assignment picks the smallest slot not used by live sessions."
+  (let ((b1 (get-buffer-create "*pi[w1]*"))
+        (b2 (get-buffer-create "*pi[w2]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process)))
+    (unwind-protect
+        (progn
+          (should (= (pi-mode--assign-window-slot) 0))
+          (let ((s1 (make-pi-mode-session :id "*pi[w1]*" :buffer b1 :process p1
+                                          :project-root "/tmp/" :window-slot 0))
+                (s2 (make-pi-mode-session :id "*pi[w2]*" :buffer b2 :process p2
+                                          :project-root "/tmp/" :window-slot 1)))
+            (pi-mode--register-session s1)
+            (pi-mode--register-session s2)
+            (should (= (pi-mode--assign-window-slot) 2))
+            (pi-mode--unregister-session "*pi[w2]*")
+            (should (= (pi-mode--assign-window-slot) 1))))
+      (kill-buffer b1) (kill-buffer b2)
+      (delete-process p1) (delete-process p2))))
+
+(ert-deftest pi-mode-test-display-args ()
+  "display-args resolves side, slot, and size from customization."
+  (let ((b (get-buffer-create "*pi[da]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((pi-mode-window-side 'bottom)
+              (pi-mode-window-height 0.3)
+              (pi-mode-window-width 0.4))
+          (should (equal (pi-mode--display-args b)
+                         '(bottom 0 window-height 0.3)))
+          (let ((pi-mode-window-side 'right))
+            (should (equal (pi-mode--display-args b)
+                           '(right 0 window-width 0.4))))
+          (let ((s (make-pi-mode-session :id "*pi[da]*" :buffer b :process p
+                                         :project-root "/tmp/" :window-slot 3)))
+            (pi-mode--register-session s)
+            (should (equal (pi-mode--display-args b)
+                           '(bottom 3 window-height 0.3)))
+            (pi-mode--unregister-session "*pi[da]*")))
+      (kill-buffer b) (delete-process p))))
+
 (ert-deftest pi-mode-test-window-commands-no-error ()
   "Window commands handle the no-session case gracefully."
   (should-error (pi-mode-toggle-recent) :type 'user-error)
