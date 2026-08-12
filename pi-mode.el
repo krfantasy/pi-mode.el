@@ -486,8 +486,10 @@ visible side by side instead of evicting each other."
 ;; Pi buffers dock in a side window; the action function reads the
 ;; window customization at display time, so changing the defcustoms
 ;; takes effect immediately.  The entry must be a proper list
-;; (REGEXP FUNCTIONS...) — a dotted (REGEXP . FUNCTION) form yields a
-;; bare symbol action, which `display-buffer' cannot unwrap.
+;; (CONDITION FUNCTIONS...) where CONDITION is the session-buffer
+;; predicate `pi-mode--session-buffer-p' — a dotted
+;; (CONDITION . FUNCTION) form yields a bare symbol action, which
+;; `display-buffer' cannot unwrap.
 (add-to-list 'display-buffer-alist
              (list #'pi-mode--session-buffer-p #'pi-mode--display-buffer))
 

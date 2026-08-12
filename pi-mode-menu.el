@@ -23,7 +23,7 @@
 (transient-define-prefix pi-mode-menu ()
   "Command menu for pi-mode sessions.
 Key layout follows claude-code-ide.el: session s/c/r/q/Q/R/l,
-navigation b/w/W/a, interaction i/f/e, submenus C/d."
+navigation b/w/W/a, interaction i/f/e, submenus C/d/S."
   [:description pi-mode--session-status
    :class transient-columns
    ["Session"
