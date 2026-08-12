@@ -262,8 +262,8 @@
       (delete-process p1) (delete-process p2))))
 
 
-(ert-deftest pi-mode-test-send-text ()
-  "send-text pastes, presses return, runs before-send hook."
+(ert-deftest pi-mode-test-insert-text ()
+  "insert-text pastes without pressing return and runs before-send hook."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[send]*"))
           (p (pi-mode-test--fake-process))
@@ -275,18 +275,17 @@
            (pi-mode--register-session s)
            (let ((pi-mode-before-send-hook
                   (list (lambda (sess txt) (setq hook-args (list sess txt))))))
-             (pi-mode--send-text s "hello pi"))
+             (pi-mode--insert-text s "hello pi"))
            (should (equal hook-args (list s "hello pi")))
-           (should (assq 'ghostel-paste-string pi-mode-test--calls))
            (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
                           '("hello pi")))
-           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
-                          '("return"))))
+           ;; insert-only: the text lands in the input box, nothing submitted
+           (should-not (assq 'ghostel-send-key pi-mode-test--calls)))
        (pi-mode--unregister-session "*pi[send]*")
        (kill-buffer b) (delete-process p)))))
 
-(ert-deftest pi-mode-test-send-text-dead-session ()
-  "send-text to a dead session signals user-error."
+(ert-deftest pi-mode-test-insert-text-dead-session ()
+  "insert-text to a dead session signals user-error."
   (pi-mode-test-with-mock-ghostel
    (let ((s (make-pi-mode-session :id "*pi[dead]*" :buffer (get-buffer-create "*pi[dead]*")
                                   :process (pi-mode-test--fake-process)
@@ -295,53 +294,11 @@
          (progn
            (pi-mode--register-session s)
            (delete-process (pi-mode-session-process s))
-           (should-error (pi-mode--send-text s "x") :type 'user-error))
+           (should-error (pi-mode--insert-text s "x") :type 'user-error))
        (pi-mode--unregister-session "*pi[dead]*")
        (kill-buffer (pi-mode-session-buffer s))))))
 
-(ert-deftest pi-mode-test-prompt-history ()
-  "Push dedupes, trims, persists; load restores."
-  (let ((pi-mode-prompt-history-file
-         (make-temp-file "pi-mode-history-" nil ".el"))
-        (pi-mode-prompt-history-length 3)
-        (pi-mode-prompt-history nil))
-    (pi-mode--prompt-history-push "one")
-    (pi-mode--prompt-history-push "two")
-    (pi-mode--prompt-history-push "one")   ; dedupe vs car
-    (pi-mode--prompt-history-push "three")
-    (pi-mode--prompt-history-push "four")  ; trim to 3
-    (should (equal pi-mode-prompt-history '("four" "three" "two")))
-    (pi-mode--prompt-history-save)
-    (setq pi-mode-prompt-history--loaded nil) ; force a fresh file read
-    (let ((pi-mode-prompt-history nil))
-      (pi-mode--prompt-history-load)
-      (should (equal pi-mode-prompt-history '("four" "three" "two"))))
-    (delete-file pi-mode-prompt-history-file)))
 
-(ert-deftest pi-mode-test-send-prompt-flow ()
-  "send-prompt reads, pushes history, sends."
-  (pi-mode-test-with-mock-ghostel
-   (let* ((b (get-buffer-create "*pi[sp]*"))
-          (p (pi-mode-test--fake-process))
-          (s (make-pi-mode-session :id "*pi[sp]*" :buffer b :process p
-                                   :project-root "/tmp/"))
-          (pi-mode-prompt-history nil)
-          (pi-mode-prompt-history-file
-           (make-temp-file "pi-mode-history-" nil ".el")))
-     (unwind-protect
-         (progn
-           (pi-mode--register-session s)
-           (with-current-buffer b
-             (cl-letf (((symbol-function 'pi-mode--read-prompt)
-                        (lambda () "my prompt"))
-                       ((symbol-function 'completing-read)
-                        (lambda (&rest _) (error "no prompt needed"))))
-               (pi-mode-send-prompt)))
-           (should (equal pi-mode-prompt-history '("my prompt")))
-           (should (assq 'ghostel-paste-string pi-mode-test--calls)))
-       (pi-mode--unregister-session "*pi[sp]*")
-       (kill-buffer b) (delete-process p)
-       (ignore-errors (delete-file pi-mode-prompt-history-file))))))
 
 (ert-deftest pi-mode-test-mode-line-session-name ()
   "Sessions contribute their name to the buffer's mode-line-misc-info."
@@ -368,164 +325,73 @@
        (pi-mode--unregister-session "*pi[int]*")
        (kill-buffer b) (delete-process p)))))
 
-(ert-deftest pi-mode-test-embed-file-format ()
-  "Embed format matches pi's <file name=...> convention."
-  (should (equal (pi-mode--embed-file "/tmp/a.ts" "line1\nline2")
-                 "<file name=\"/tmp/a.ts\">\nline1\nline2\n</file>")))
 
-(ert-deftest pi-mode-test-region-line-range ()
-  (with-temp-buffer
-    (insert "a\nb\nc\nd\n")
-    (should (equal (pi-mode--region-line-range 1 8) '(1 4)))))
 
-(ert-deftest pi-mode-test-send-region-raw-text ()
-  "With pi-mode-region-embed-p nil, region sends use raw content."
+(ert-deftest pi-mode-test-send-region-inserts-raw-content ()
+  "send-region pastes the raw region content: no minibuffer prompt, no submit."
   (pi-mode-test-with-mock-ghostel
-   (let* ((b (get-buffer-create "*pi[rrr]*"))
+   (let* ((b (get-buffer-create "*pi[sr]*"))
           (p (pi-mode-test--fake-process))
-          (s (make-pi-mode-session :id "*pi[rrr]*" :buffer b :process p
-                                   :project-root "/tmp/"))
-          (pi-mode-region-embed-p nil)
-          (pi-mode-prompt-history nil)
-          (pi-mode-prompt-history-file
-           (make-temp-file "pi-mode-history-" nil ".el")))
-     (unwind-protect
-         (progn
-           (pi-mode--register-session s)
-           (with-temp-buffer
-             (insert "raw line")
-             (cl-letf (((symbol-function 'buffer-file-name) (lambda () "/tmp/raw.ts"))
-                       ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
-               (pi-mode-send-region (point-min) (point-max) nil)))
-           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
-             (should call)
-             (should (equal (car (cdr call)) "raw line"))
-             ;; no <file name=...> wrapper in raw mode
-             (should-not (string-match-p "<file name=" (car (cdr call))))))
-       (pi-mode--unregister-session "*pi[rrr]*")
-       (kill-buffer b) (delete-process p)
-       (ignore-errors (delete-file pi-mode-prompt-history-file))))))
-
-(ert-deftest pi-mode-test-send-region-embed ()
-  "send-region embeds region content and records the prompt in history."
-  (pi-mode-test-with-mock-ghostel
-   (let* ((b (get-buffer-create "*pi[re]*"))
-          (p (pi-mode-test--fake-process))
-          (s (make-pi-mode-session :id "*pi[re]*" :buffer b :process p
-                                   :project-root "/tmp/"))
-          (pi-mode-region-embed-p t)
-          (pi-mode-prompt-history nil)
-          (pi-mode-prompt-history-file
-           (make-temp-file "pi-mode-history-" nil ".el")))
-     (unwind-protect
-         (progn
-           (pi-mode--register-session s)
-           (with-temp-buffer
-             (insert "hello\nworld")
-             (let ((file "/tmp/hello.txt"))
-               (cl-letf (((symbol-function 'buffer-file-name) (lambda () file))
-                         ((symbol-function 'pi-mode--read-prompt) (lambda () "review this")))
-                 (pi-mode-send-region (point-min) (point-max) nil))))
-           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls))
-                 (text (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))
-             (should call)
-             (should (string-match-p
-                      "review this\n\n<file name=\"/tmp/hello.txt\">\nhello\nworld\n</file>"
-                      text)))
-           (should (equal pi-mode-prompt-history '("review this"))))
-       (pi-mode--unregister-session "*pi[re]*")
-       (kill-buffer b) (delete-process p)
-       (ignore-errors (delete-file pi-mode-prompt-history-file))))))
-
-(ert-deftest pi-mode-test-send-region-reference ()
-  "C-u (reference-p) sends @path#Lstart-Lend instead of content."
-  (pi-mode-test-with-mock-ghostel
-   (let* ((b (get-buffer-create "*pi[rr]*"))
-          (p (pi-mode-test--fake-process))
-          (s (make-pi-mode-session :id "*pi[rr]*" :buffer b :process p
+          (s (make-pi-mode-session :id "*pi[sr]*" :buffer b :process p
                                    :project-root "/tmp/")))
      (unwind-protect
          (progn
            (pi-mode--register-session s)
            (with-temp-buffer
-             (insert "a\nb\nc\n")
-             (cl-letf (((symbol-function 'buffer-file-name) (lambda () "/tmp/r.ts"))
-                       ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
-               (pi-mode-send-region (point-min) (point-max) t)))
-           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
-             (should call)
-             (should (string-match-p "@/tmp/r.ts#L1-L4"
-                                     (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))))
-       (pi-mode--unregister-session "*pi[rr]*")
+             (insert "line1\nline2")
+             (cl-letf (((symbol-function 'read-from-minibuffer)
+                        (lambda (&rest _) (error "must not prompt"))))
+               (pi-mode-send-region (point-min) (point-max))))
+           (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                          '("line1\nline2")))
+           ;; insert-only: no return key was sent
+           (should-not (assq 'ghostel-send-key pi-mode-test--calls)))
+       (pi-mode--unregister-session "*pi[sr]*")
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-send-region-requires-region ()
   "send-region without a region (point-min = point-max) errors."
   (pi-mode-test-with-mock-ghostel
-   (should-error (pi-mode-send-region 1 1 nil) :type 'user-error)))
+   (should-error (pi-mode-send-region 1 1) :type 'user-error)))
 
-(ert-deftest pi-mode-test-send-defun-embed ()
-  (pi-mode-test-with-mock-ghostel
-   (let* ((b (get-buffer-create "*pi[rd]*"))
-          (p (pi-mode-test--fake-process))
-          (s (make-pi-mode-session :id "*pi[rd]*" :buffer b :process p
-                                   :project-root "/tmp/")))
-     (unwind-protect
-         (progn
-           (pi-mode--register-session s)
-           (with-temp-buffer
-             (insert "(defun foo ()\n  t)\n\n(defun bar ()\n  nil)\n")
-             (goto-char (point-min))
-             (cl-letf (((symbol-function 'buffer-file-name) (lambda () "/tmp/x.el"))
-                       ((symbol-function 'pi-mode--read-prompt) (lambda () "")))
-               (pi-mode-send-defun)))
-           (let ((call (assq 'ghostel-paste-string pi-mode-test--calls)))
-             (should call)
-             (should (string-match-p
-                      "<file name=\"/tmp/x.el\">\n(defun foo ()\n  t)"
-                      (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))))
-       (pi-mode--unregister-session "*pi[rd]*")
-       (kill-buffer b) (delete-process p)))))
-
-(ert-deftest pi-mode-test-send-file-embed ()
-  "send-file embeds the file content read from disk."
+(ert-deftest pi-mode-test-send-file-inserts-reference ()
+  "send-file inserts an @-reference relative to the session's cwd."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[sf]*"))
           (p (pi-mode-test--fake-process))
           (s (make-pi-mode-session :id "*pi[sf]*" :buffer b :process p
-                                   :project-root "/tmp/"))
-          (file (make-temp-file "pi-mode-send-file-" nil ".txt")))
+                                   :project-root "/tmp/proj")))
      (unwind-protect
          (progn
-           (write-region "alpha\nbeta" nil file)
            (pi-mode--register-session s)
-           (cl-letf (((symbol-function 'pi-mode--read-prompt) (lambda () "")))
-             (pi-mode-send-file file))
-           (let ((text (car (cdr (assq 'ghostel-paste-string pi-mode-test--calls)))))
-             (should (string-match-p
-                      (format "<file name=\"%s\">\nalpha\nbeta\n</file>"
-                              (regexp-quote file))
-                      text))))
+           (with-temp-buffer
+             (cl-letf (((symbol-function 'buffer-file-name)
+                        (lambda () "/tmp/proj/sub/a.ts"))
+                       ((symbol-function 'read-from-minibuffer)
+                        (lambda (&rest _) (error "must not prompt"))))
+               (pi-mode-send-file)))
+           (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                          '("@sub/a.ts")))
+           ;; insert-only: no return key was sent
+           (should-not (assq 'ghostel-send-key pi-mode-test--calls)))
        (pi-mode--unregister-session "*pi[sf]*")
-       (kill-buffer b) (delete-process p)
-       (delete-file file)))))
+       (kill-buffer b) (delete-process p)))))
 
-(ert-deftest pi-mode-test-send-defun-no-defun ()
-  "send-defun in an empty buffer signals user-error."
+(ert-deftest pi-mode-test-send-file-no-file ()
+  "send-file in a buffer not visiting a file signals user-error."
   (pi-mode-test-with-mock-ghostel
-   (with-temp-buffer
-     (should-error (pi-mode-send-defun) :type 'user-error))))
-
-(ert-deftest pi-mode-test-send-error-fallback-parse ()
-  "Error-at-point parses file:line:col from thing at point."
-  (with-temp-buffer
-    (insert "/tmp/broken.ts:12:5")
-    (goto-char 1)
-    (cl-letf (((symbol-function 'thing-at-point)
-               (lambda (thing) (when (eq thing 'filename)
-                                 "/tmp/broken.ts:12:5"))))
-      (should (equal (pi-mode--error-at-point)
-                     '("/tmp/broken.ts" 12 5 nil))))))
+   (let* ((b (get-buffer-create "*pi[sfn]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[sfn]*" :buffer b :process p
+                                   :project-root "/tmp/proj")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-temp-buffer
+             (cl-letf (((symbol-function 'buffer-file-name) (lambda () nil)))
+               (should-error (pi-mode-send-file) :type 'user-error))))
+       (pi-mode--unregister-session "*pi[sfn]*")
+       (kill-buffer b) (delete-process p)))))
 
 ;;; Task 6: session commands
 
@@ -620,9 +486,8 @@
   (dolist (cmd '(pi-mode-session-continue pi-mode-session-resume
                  pi-mode-session-fork pi-mode-session-rename
                  pi-mode-session-stop pi-mode-session-stop-all
-                 pi-mode-list-sessions pi-mode-send-prompt
+                 pi-mode-list-sessions
                  pi-mode-send-region pi-mode-send-file
-                 pi-mode-send-defun pi-mode-send-error
                  pi-mode-switch-buffer pi-mode-toggle-panel
                  pi-mode-show-all pi-mode-toggle-recent
                  pi-mode-interrupt pi-mode-configure-model

@@ -33,11 +33,8 @@
     ("Q" "Stop all" pi-mode-session-stop-all)
     ("l" "List sessions" pi-mode-list-sessions)]
    ["Send"
-    ("p" "Prompt" pi-mode-send-prompt)
-    ("r" "Region (C-u: reference)" pi-mode-send-region)
-    ("f" "File" pi-mode-send-file)
-    ("d" "Defun" pi-mode-send-defun)
-    ("e" "Error at point" pi-mode-send-error)]
+    ("r" "Region" pi-mode-send-region)
+    ("f" "File" pi-mode-send-file)]
    ["Navigate"
     ("b" "Switch buffer" pi-mode-switch-buffer)
     ("w" "Toggle panel" pi-mode-toggle-panel)

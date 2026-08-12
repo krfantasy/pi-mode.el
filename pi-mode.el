@@ -11,7 +11,7 @@
 
 ;;; Commentary:
 ;; Run the pi coding agent inside a ghostel terminal buffer with project
-;; detection, embed-format region sending, session management, and a
+;; detection, prompt-input region sending, session management, and a
 ;; transient command menu.  Design spec:
 ;; docs/superpowers/specs/2026-08-11-pi-mode-design.md
 
@@ -21,7 +21,6 @@
 (require 'project)          ; project-root is not autoloaded
 (require 'ghostel)
 (require 'transient)
-(require 'compile)          ; compilation--message->loc etc. (batch needs it)
 (require 'pi-mode-keys)     ; standalone installer; does not require pi-mode
 
 (defgroup pi nil
@@ -299,47 +298,6 @@ The resolved session's `last-used' is updated (MRU semantics)."
 (add-hook 'kill-buffer-hook #'pi-mode--kill-buffer-guard)
 
 
-;;; Prompt history
-
-(defcustom pi-mode-prompt-history-file
-  (locate-user-emacs-file "pi-mode-history")
-  "File where the pi-mode prompt history is persisted."
-  :type 'file
-  :group 'pi)
-
-(defcustom pi-mode-prompt-history-length 200
-  "Maximum number of entries kept in the prompt history."
-  :type 'integer
-  :group 'pi)
-
-(defvar pi-mode-prompt-history nil
-  "Prompt history ring (newest first).")
-
-(defvar pi-mode-prompt-history--loaded nil)
-
-(defun pi-mode--prompt-history-load ()
-  (unless pi-mode-prompt-history--loaded
-    (setq pi-mode-prompt-history--loaded t)
-    (when (file-exists-p pi-mode-prompt-history-file)
-      (with-temp-buffer
-        (insert-file-contents pi-mode-prompt-history-file)
-        (setq pi-mode-prompt-history
-              (ignore-errors (read (buffer-string))))))))
-
-(defun pi-mode--prompt-history-save ()
-  (with-temp-file pi-mode-prompt-history-file
-    (prin1 pi-mode-prompt-history (current-buffer))))
-
-(defun pi-mode--prompt-history-push (text)
-  "Add TEXT to the prompt history, deduped and trimmed.
-Dedupe is membership-based so no prompt appears twice in the ring."
-  (pi-mode--prompt-history-load)
-  (unless (member text pi-mode-prompt-history)
-    (push text pi-mode-prompt-history)
-    (when (> (length pi-mode-prompt-history) pi-mode-prompt-history-length)
-      (setcdr (nthcdr (1- pi-mode-prompt-history-length) pi-mode-prompt-history) nil)))
-  (pi-mode--prompt-history-save))
-
 ;;; Sending
 
 (defun pi-mode--session-live-p (session)
@@ -348,32 +306,17 @@ Dedupe is membership-based so no prompt appears twice in the ring."
        (buffer-live-p (pi-mode-session-buffer session))
        (process-live-p (pi-mode-session-process session))))
 
-(defun pi-mode--send-text (session text)
-  "Send TEXT to SESSION's pi via bracketed paste and return."
+(defun pi-mode--insert-text (session text)
+  "Insert TEXT into SESSION's pi prompt input without submitting.
+The text is pasted into pi's input box; press Return in the pi buffer
+to send it."
   (unless (pi-mode--session-live-p session)
     (user-error "pi session is not running; start one with `pi-mode-start'"))
   (run-hook-with-args 'pi-mode-before-send-hook session text)
   (with-current-buffer (pi-mode-session-buffer session)
-    (ghostel-paste-string text)
-    (ghostel-send-key "return"))
-  (pi-mode-log "sent %S" (substring text 0 (min 80 (length text))))
+    (ghostel-paste-string text))
+  (pi-mode-log "inserted %S" (substring text 0 (min 80 (length text))))
   text)
-
-(defun pi-mode--read-prompt ()
-  "Read a prompt from the minibuffer with pi-mode history navigation."
-  (pi-mode--prompt-history-load)
-  (let ((history-add-new-input nil))
-    (read-from-minibuffer "pi> " nil nil t 'pi-mode-prompt-history)))
-
-;;;###autoload
-(defun pi-mode-send-prompt ()
-  "Send a prompt to the target pi session."
-  (interactive)
-  (let* ((session (pi-mode--resolve-session current-prefix-arg))
-         (text (pi-mode--read-prompt)))
-    (when (and text (> (length text) 0))
-      (pi-mode--prompt-history-push text)
-      (pi-mode--send-text session text))))
 
 ;;;###autoload
 (defun pi-mode-interrupt ()
@@ -386,140 +329,35 @@ Dedupe is membership-based so no prompt appears twice in the ring."
 
 (define-key pi-mode-map (kbd "C-<escape>") #'pi-mode-interrupt)
 
-;;; Region and context sending
+;;; Region and file sending
 
-(defcustom pi-mode-region-embed-p t
-  "When non-nil, region sends use the embedded <file> block format.
-When nil, region content is sent as raw text.  A prefix argument (C-u)
-switches a send to @file#Lstart-Lend reference mode regardless."
-  :type 'boolean
-  :group 'pi)
-
-(defun pi-mode--embed-file (file content)
-  "Wrap CONTENT in pi's <file name=...> embed convention."
-  (format "<file name=\"%s\">\n%s\n</file>" file content))
-
-(defun pi-mode--region-line-range (start end)
-  "Return (START-LINE END-LINE) for the 1-based lines of START..END."
-  (list (line-number-at-pos start) (line-number-at-pos end)))
-
-(defun pi-mode--send-context (session file content start end reference-p embed-p)
-  "Send FILE's region START..END to SESSION.
-When REFERENCE-P, send @file#Lstart-Lend text.  Otherwise embed CONTENT
-in pi's <file name=...> block when EMBED-P, or send the raw CONTENT
-when EMBED-P is nil (`pi-mode-region-embed-p' off).  EMBED-P is always
-passed explicitly by callers.
-Records a non-empty prompt in the prompt history (spec: all sends do)."
-  (let* ((prompt (pi-mode--read-prompt))
-         (text (cond
-                (reference-p (format "@%s#L%d-L%d" file start end))
-                (embed-p (pi-mode--embed-file file content))
-                (t content)))
-         (full (if (and prompt (> (length prompt) 0))
-                   (concat prompt "\n\n" text)
-                 text)))
-    (when (and prompt (> (length prompt) 0))
-      (pi-mode--prompt-history-push prompt))
-    (pi-mode--send-text session full)))
-
-(defun pi-mode--send-region-internal (start end reference-p)
+;;;###autoload
+(defun pi-mode-send-region (start end)
+  "Insert the region into the target pi session's prompt input.
+The region content is pasted without submitting; press Return in the
+pi buffer to send it."
+  (interactive "r")
   (unless (< start end)
     (user-error "No active region"))
   (let* ((session (pi-mode--resolve-session nil t))
-         (file (or (buffer-file-name)
-                   (buffer-name (current-buffer))))
-         (content (buffer-substring-no-properties start end))
-         (range (pi-mode--region-line-range start end)))
-    (pi-mode--send-context session file content (car range) (cadr range)
-                           reference-p (and (not reference-p) pi-mode-region-embed-p))))
+         (content (buffer-substring-no-properties start end)))
+    (pi-mode--insert-text session content)))
 
 ;;;###autoload
-(defun pi-mode-send-region (start end &optional reference-p)
-  "Send the region to the target pi session.
-With prefix argument, send a @file#Lstart-Lend reference instead of the
-embedded region content."
-  (interactive "r\nP")
-  (pi-mode--send-region-internal start end reference-p))
-
-;;;###autoload
-(defun pi-mode-send-file (file)
-  "Send FILE (read from disk) to the target pi session."
-  (interactive "fFile to send: ")
-  (let* ((session (pi-mode--resolve-session nil t))
-         (content (with-temp-buffer
-                    (insert-file-contents file)
-                    (buffer-string))))
-    (pi-mode--send-context session file content 1 1 nil t)))
-
-(defun pi-mode--defun-bounds ()
-  "Return (START . END) for the defun at point, or nil.
-
-Portable replacement for `bounds-of-defun-at-point', which was removed
-in Emacs 30 (obsolete since 29); this mode targets Emacs 28.1+.  Uses
-the same end-then-begin order as `mark-defun'."
-  (save-excursion
-    (ignore-errors
-      (let ((end (progn (end-of-defun) (point)))
-            (beg (progn (beginning-of-defun) (point))))
-        (when (> end beg)
-          (cons beg end))))))
-
-;;;###autoload
-(defun pi-mode-send-defun ()
-  "Send the defun at point to the target pi session."
+(defun pi-mode-send-file ()
+  "Insert an @-reference to the current buffer's file into pi's prompt input.
+The reference path is relative to the target session's working
+directory.  The text is pasted without submitting; press Return in the
+pi buffer to send it."
   (interactive)
-  (let* ((bounds (pi-mode--defun-bounds)))
-    (unless bounds
-      (user-error "No defun at point"))
-    (pi-mode--send-region-internal (car bounds) (cdr bounds) nil)))
-
-(defun pi-mode--error-at-point ()
-  "Return (FILE LINE COLUMN MESSAGE) for the error at point, or nil."
-  (let ((msg (get-text-property (point) 'compilation-message)))
-    (if msg
-        (let* ((loc (compilation--message->loc msg))
-               (file-struct (compilation--loc->file-struct loc))
-               (file (caar file-struct)))
-          (list file
-                (compilation--loc->line loc)
-                (compilation--loc->col loc)
-                ;; the message struct has no text field; the message text is
-                ;; the buffer text at the error position
-                (string-trim
-                 (buffer-substring-no-properties (line-beginning-position)
-                                                 (line-end-position)))))
-      (when-let ((s (thing-at-point 'filename)))
-        (when (string-match "\\(.+\\):\\([0-9]+\\):\\([0-9]+\\)" s)
-          (list (match-string 1 s)
-                (string-to-number (match-string 2 s))
-                (string-to-number (match-string 3 s))
-                nil))))))
-
-;;;###autoload
-(defun pi-mode-send-error ()
-  "Send the error at point (compilation message or file:line:col)."
-  (interactive)
-  (let* ((loc (pi-mode--error-at-point)))
-    (unless loc
-      (user-error "No error found at point"))
-    (let* ((file (nth 0 loc)) (line (nth 1 loc)) (col (nth 2 loc)) (msg (nth 3 loc))
-           (session (pi-mode--resolve-session nil t))
-           (content (when (file-readable-p file)
-                      (with-temp-buffer
-                        (insert-file-contents file)
-                        (let* ((l (max 1 (- line 5)))
-                               (e (min (point-max) (save-excursion
-                                                     (goto-char (point-min))
-                                                     (forward-line (1+ line))
-                                                     (point)))))
-                          (buffer-substring-no-properties
-                           (save-excursion (goto-char (point-min)) (forward-line (1- l)) (point))
-                           e)))))
-           (text (format "Error at %s:%s:%s%s\n%s"
-                         file line col
-                         (if msg (format ": %s" msg) "")
-                         (or content ""))))
-      (pi-mode--send-text session text))))
+  (let ((file (buffer-file-name)))
+    (unless file
+      (user-error "Buffer is not visiting a file"))
+    (let* ((session (pi-mode--resolve-session nil t))
+           (text (concat "@"
+                         (file-relative-name file
+                                             (pi-mode-session-project-root session)))))
+      (pi-mode--insert-text session text))))
 
 ;;; Window commands
 
