@@ -521,24 +521,30 @@
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))
 
+(ert-deftest pi-mode-test-window-defaults ()
+  "Window defaults match claude-code-ide.el: right side, 20 lines, 100 columns."
+  (should (eq pi-mode-window-side 'right))
+  (should (= pi-mode-window-height 20))
+  (should (= pi-mode-window-width 100)))
+
 (ert-deftest pi-mode-test-display-args ()
   "display-args resolves side, slot, and size from customization."
   (let ((b (get-buffer-create "*pi[da]*"))
         (p (pi-mode-test--fake-process)))
     (unwind-protect
         (let ((pi-mode-window-side 'bottom)
-              (pi-mode-window-height 0.3)
-              (pi-mode-window-width 0.4))
+              (pi-mode-window-height 20)
+              (pi-mode-window-width 100))
           (should (equal (pi-mode--display-args b)
-                         '(bottom 0 window-height 0.3)))
+                         '(bottom 0 window-height 20)))
           (let ((pi-mode-window-side 'right))
             (should (equal (pi-mode--display-args b)
-                           '(right 0 window-width 0.4))))
+                           '(right 0 window-width 100))))
           (let ((s (make-pi-mode-session :id "*pi[da]*" :buffer b :process p
                                          :project-root "/tmp/" :window-slot 3)))
             (pi-mode--register-session s)
             (should (equal (pi-mode--display-args b)
-                           '(bottom 3 window-height 0.3)))
+                           '(bottom 3 window-height 20)))
             (pi-mode--unregister-session "*pi[da]*")))
       (kill-buffer b) (delete-process p))))
 

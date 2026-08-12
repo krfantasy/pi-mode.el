@@ -361,26 +361,23 @@ pi buffer to send it."
 
 ;;; Window commands
 
-(defcustom pi-mode-window-side 'bottom
-  "Frame side where pi buffers are displayed in a side window."
+(defcustom pi-mode-window-side 'right
+  "Side of the frame where pi buffers are displayed in a side window."
   :type '(choice (const :tag "Bottom" bottom)
                  (const :tag "Top" top)
                  (const :tag "Left" left)
                  (const :tag "Right" right))
   :group 'pi)
 
-(defcustom pi-mode-window-height 0.3
-  "Size of pi side windows when `pi-mode-window-side' is top or bottom.
-An integer >= 1 is a height in lines; a float between 0 and 1 is a
-fraction of the frame height."
-  :type 'number
+(defcustom pi-mode-window-height 20
+  "Height of the pi side window when opened on top or bottom."
+  :type 'integer
   :group 'pi)
 
-(defcustom pi-mode-window-width 0.4
-  "Size of pi side windows when `pi-mode-window-side' is left or right.
-An integer >= 1 is a width in columns; a float between 0 and 1 is a
-fraction of the frame width."
-  :type 'number
+(defcustom pi-mode-window-width 100
+  "Body width of the pi side window when opened on left or right.
+This sets the usable text area width, excluding fringes and margins."
+  :type 'integer
   :group 'pi)
 
 (defun pi-mode--display-args (buffer)
