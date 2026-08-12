@@ -428,8 +428,11 @@ visible side by side instead of evicting each other."
 
 ;; Pi buffers dock in a side window; the action function reads the
 ;; window customization at display time, so changing the defcustoms
-;; takes effect immediately.
-(add-to-list 'display-buffer-alist '("\\*pi\\[" . pi-mode--display-buffer))
+;; takes effect immediately.  The entry must be a proper list
+;; (REGEXP FUNCTIONS...) — a dotted (REGEXP . FUNCTION) form yields a
+;; bare symbol action, which `display-buffer' cannot unwrap.
+(add-to-list 'display-buffer-alist
+             '("\\*pi\\[" pi-mode--display-buffer))
 
 (defvar pi-mode--panel-hidden nil)
 

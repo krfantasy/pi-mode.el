@@ -542,6 +542,20 @@
             (pi-mode--unregister-session "*pi[da]*")))
       (kill-buffer b) (delete-process p))))
 
+(ert-deftest pi-mode-test-display-buffer-entry ()
+  "The display-buffer-alist entry displays pi buffers in a side window.
+Regression: a dotted (REGEXP . FUNCTION) entry makes `display-buffer'
+error with `wrong type argument: listp' — the entry must be a proper
+list so the action unwraps to a function list."
+  (let ((b (get-buffer-create "*pi[entry]*")))
+    (unwind-protect
+        (let ((window (display-buffer b)))
+          (should (windowp window))
+          (should (eq (window-buffer window) b))
+          (should (eq (window-parameter window 'window-side)
+                      pi-mode-window-side)))
+      (kill-buffer b))))
+
 (ert-deftest pi-mode-test-window-commands-no-error ()
   "Window commands handle the no-session case gracefully."
   (should-error (pi-mode-toggle-recent) :type 'user-error)
