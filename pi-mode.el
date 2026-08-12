@@ -86,16 +86,23 @@ default \"*pi[project]*\" / \"*pi[project:name]*\" naming is used."
       (if name (format "*pi[%s:%s]*" project name)
         (format "*pi[%s]*" project)))))
 
+;; The live-session registry (hash table keyed by session id) is defined
+;; in the Sessions section below; the naming predicate references it, so
+;; declare it here for the byte-compiler (cc-ide pattern).
+(defvar pi-mode--sessions)
+
 (defun pi-mode--session-buffer-p (buffer-or-name &rest _args)
   "Non-nil when BUFFER-OR-NAME hosts a pi session.
 Accepts a buffer object or a buffer name string: `buffer-match-p'
 calls condition predicates with the buffer name plus the action
-alist as ARGS."
+alist as ARGS.  The registry lookup covers buffers whose local was
+wiped by `ghostel-mode' activation."
   (let ((buffer (if (bufferp buffer-or-name) buffer-or-name
                   (get-buffer buffer-or-name))))
     (and buffer
          (buffer-live-p buffer)
-         (buffer-local-value 'pi-mode--session buffer))))
+         (or (buffer-local-value 'pi-mode--session buffer)
+             (gethash (buffer-name buffer) pi-mode--sessions)))))
 
 ;;; Sessions
 
@@ -224,6 +231,23 @@ receives it trimmed."
         (when (and pi-mode-kill-buffer-on-exit (buffer-live-p buffer))
           (kill-buffer buffer))))))
 
+(defvar-local pi-mode--session-setup-done nil
+  "Non-nil when this buffer's pi-mode session locals are applied.")
+
+(defun pi-mode--setup-session-buffer (session)
+  "Apply the pi-mode buffer-locals for SESSION to the current buffer.
+Idempotent per buffer: `ghostel-exec' activates `ghostel-mode',
+whose `kill-all-local-variables' wipes these locals, so the launch
+path re-applies them after the terminal is created."
+  (setq-local default-directory (pi-mode-session-project-root session))
+  (setq-local pi-mode--session session)
+  (pi-mode +1)
+  (unless pi-mode--session-setup-done
+    (setq-local pi-mode--session-setup-done t)
+    (setq-local mode-line-misc-info
+                (append mode-line-misc-info
+                        '((:eval (pi-mode--mode-line-segment)))))))
+
 (defun pi-mode--make-session (project-root &optional name)
   "Create an unregistered session struct for PROJECT-ROOT in a new buffer.
 Registration happens in `pi-mode--launch-buffer' after a successful
@@ -236,15 +260,12 @@ launch, so a failed launch leaves nothing behind."
       ;; `pi-mode--ghostel-launch' is shadowed by the buffer-local
       ;; value inherited at creation, so without this the process would
       ;; launch in whatever directory the caller happened to be in.
-      (setq-local default-directory project-root)
+      ;; `pi-mode--setup-session-buffer' is re-applied after launch
+      ;; because ghostel-mode activation wipes these locals.
       (let ((session (make-pi-mode-session
                       :id buffer-name :name name :buffer (current-buffer)
                       :project-root project-root :last-used (current-time))))
-        (setq-local pi-mode--session session)
-        (pi-mode +1)
-        (setq-local mode-line-misc-info
-                    (append mode-line-misc-info
-                            '((:eval (pi-mode--mode-line-segment)))))
+        (pi-mode--setup-session-buffer session)
         session))))
 
 (defun pi-mode--mode-line-segment ()
@@ -263,6 +284,12 @@ launch fails the scratch buffer is removed."
         (let* ((buffer (pi-mode-session-buffer session))
                (process (pi-mode--ghostel-launch buffer project-root args)))
           (setf (pi-mode-session-process session) process)
+          ;; ghostel-exec activates ghostel-mode, whose
+          ;; kill-all-local-variables wipes the session locals; re-apply
+          ;; them so the display-buffer predicate, kill-buffer guard and
+          ;; mode-line segment keep working.
+          (with-current-buffer buffer
+            (pi-mode--setup-session-buffer session))
           (setf (pi-mode-session-window-slot session) (pi-mode--assign-window-slot))
           (pi-mode--register-session session)
           (pi-mode--attach-sentinel process)

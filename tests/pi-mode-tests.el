@@ -881,6 +881,50 @@ list so the action unwraps to a function list."
             (should (equal old (pi-mode-session-last-used s)))))
       (kill-buffer sb) (kill-buffer b) (delete-process p))))
 
+(ert-deftest pi-mode-test-launch-restores-locals-after-ghostel-mode ()
+  "Launch re-applies session locals wiped by ghostel-mode activation.
+Regression: real `ghostel-exec' activates `ghostel-mode', whose
+`kill-all-local-variables' wipes `pi-mode--session' and the mode-line
+segment; the display-buffer predicate then misses and sessions lose
+their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
+  (pi-mode-test-with-mock-ghostel
+   ;; Simulate the real ghostel wipe inside the mocked exec
+   (cl-letf (((symbol-function 'ghostel-exec)
+              (lambda (buffer _program &optional _args)
+                (with-current-buffer buffer
+                  (kill-all-local-variables))
+                (pi-mode-test--fake-process))))
+     (let* ((session (pi-mode--launch-buffer "/tmp/wipe-proj/" pi-mode-cli-args))
+            (buffer (pi-mode-session-buffer session)))
+       (unwind-protect
+           (progn
+             (should (eq (buffer-local-value 'pi-mode--session buffer) session))
+             (should (buffer-local-value 'pi-mode buffer))
+             (should (pi-mode--session-buffer-p buffer))
+             (should (pi-mode--session-buffer-p (buffer-name buffer)))
+             (let ((win (get-buffer-window buffer)))
+               (should win)
+               (should (eq (window-parameter win 'window-side)
+                           pi-mode-window-side)))
+             (should (string-match-p "pi-mode--mode-line-segment"
+                                     (format "%S" (buffer-local-value
+                                                   'mode-line-misc-info buffer)))))
+         (kill-buffer buffer))))))
+
+(ert-deftest pi-mode-test-session-buffer-p-registry-fallback ()
+  "The predicate matches registered sessions even when the local was wiped."
+  (let* ((b (get-buffer-create "*pi[reg]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[reg]*" :buffer b :process p
+                                  :project-root "/tmp/")))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s)
+          (should (pi-mode--session-buffer-p b))
+          (should (pi-mode--session-buffer-p "*pi[reg]*")))
+      (pi-mode--unregister-session "*pi[reg]*")
+      (kill-buffer b) (delete-process p))))
+
 ;;; Configure commands
 
 (ert-deftest pi-mode-test-configure-model ()
