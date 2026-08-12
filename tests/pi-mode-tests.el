@@ -779,7 +779,7 @@ list so the action unwraps to a function list."
        (delete-process p1) (delete-process p2)))))
 
 (ert-deftest pi-mode-test-toggle-panel-restore-skips-dead ()
-  "Restore skips remembered sessions whose process died."
+  "Restore drops dead remembered sessions and falls back to the MRU live one."
   (pi-mode-test-with-mock-ghostel
    (let* ((b1 (get-buffer-create "*pi[td1]*"))
           (b2 (get-buffer-create "*pi[td2]*"))
@@ -801,11 +801,13 @@ list so the action unwraps to a function list."
            (display-buffer b1)
            (pi-mode-toggle-panel)               ; hide s1, remembered set = (s1)
            (delete-process p1)                  ; s1 dies while hidden
-           ;; stash s2 in the hidden set manually to exercise the filter
-           (pi-mode--hidden-panel-set (list s2))
+           ;; the remembered set holds the now-dead s1: restore must skip it
+           ;; via the live-session filter and fall back to the MRU live
+           ;; session (s2)
+           (pi-mode--hidden-panel-set (list s1))
            (should (equal (pi-mode-toggle-panel) :shown))
-           (should (get-buffer-window b2))      ; s2 restored
-           (should-not (get-buffer-window b1))) ; s1 dead — window cannot exist
+           (should (get-buffer-window b2))      ; s2 restored via MRU fallback
+           (should-not (get-buffer-window b1))) ; dead s1 skipped — no window
        (pi-mode--unregister-session "*pi[td1]*")
        (pi-mode--unregister-session "*pi[td2]*")
        (kill-buffer b1) (kill-buffer b2)
