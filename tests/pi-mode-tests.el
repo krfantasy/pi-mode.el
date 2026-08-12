@@ -88,6 +88,73 @@
           (should (equal (pi-mode--unique-buffer-name "*pi[other]*") "*pi[other]*")))
       (kill-buffer buf))))
 
+(ert-deftest pi-mode-test-session-buffer-p ()
+  "The predicate matches session buffers by buffer-local var, any name."
+  (let ((b (get-buffer-create "*pi[pred]*")))
+    (unwind-protect
+        (progn
+          (should-not (pi-mode--session-buffer-p b))
+          ;; display-buffer-alist passes buffer NAME strings
+          (should-not (pi-mode--session-buffer-p "*pi[pred]*"))
+          (with-current-buffer b
+            (setq-local pi-mode--session (make-pi-mode-session :id "*pi[pred]*")))
+          (should (pi-mode--session-buffer-p b))
+          (should (pi-mode--session-buffer-p "*pi[pred]*")))
+      (kill-buffer b))))
+
+(ert-deftest pi-mode-test-session-buffer-p-killed ()
+  "The predicate is nil for killed buffers."
+  (let ((b (get-buffer-create "*pi[dead]*")))
+    (with-current-buffer b
+      (setq-local pi-mode--session (make-pi-mode-session :id "*pi[dead]*")))
+    (kill-buffer b)
+    (should-not (pi-mode--session-buffer-p b))
+    (should-not (pi-mode--session-buffer-p "*pi[dead]*"))))
+
+(ert-deftest pi-mode-test-session-base-name-default ()
+  "Default naming without a custom function."
+  (let ((pi-mode-buffer-name-function nil))
+    (should (equal (pi-mode--session-base-name "/tmp/proj/") "*pi[proj]*"))
+    (should (equal (pi-mode--session-base-name "/tmp/proj/" "refactor")
+                   "*pi[proj:refactor]*"))))
+
+(ert-deftest pi-mode-test-session-base-name-custom ()
+  "The custom function receives (DIRECTORY &optional NAME)."
+  (let ((pi-mode-buffer-name-function
+         (lambda (directory &optional name)
+           (let ((project (file-name-nondirectory (directory-file-name directory))))
+             (if name (format "*Pi:%s/%s*" project name)
+               (format "*Pi:%s*" project))))))
+    (should (equal (pi-mode--session-base-name "/tmp/proj/") "*Pi:proj*"))
+    (should (equal (pi-mode--session-base-name "/tmp/proj/" "refactor")
+                   "*Pi:proj/refactor*"))))
+
+(ert-deftest pi-mode-test-make-session-custom-name ()
+  "pi-mode--make-session honors the custom buffer-name function."
+  (let* ((pi-mode-buffer-name-function
+         (lambda (directory &optional name)
+           (format "*Custom[%s:%s]*" (file-name-nondirectory (directory-file-name directory))
+                   (or name "default"))))
+        (s (pi-mode--make-session "/tmp/cproj/" "refactor")))
+    (unwind-protect
+        (progn
+          (should (equal (buffer-name (pi-mode-session-buffer s))
+                         "*Custom[cproj:refactor]*"))
+          (should (equal (pi-mode-session-id s) "*Custom[cproj:refactor]*")))
+      (kill-buffer (pi-mode-session-buffer s)))))
+
+(ert-deftest pi-mode-test-make-session-custom-name-unique ()
+  "Custom-named session buffers still get <N> uniquification."
+  (let* ((pi-mode-buffer-name-function
+         (lambda (_directory &optional name) (format "*Custom[%s]*" (or name "x"))))
+        (s1 (pi-mode--make-session "/tmp/u1/" "a")))
+    (unwind-protect
+        (let ((s2 (pi-mode--make-session "/tmp/u1/" "a")))
+          (unwind-protect
+              (should (equal (buffer-name (pi-mode-session-buffer s2)) "*Custom[a]*<2>"))
+            (kill-buffer (pi-mode-session-buffer s2))))
+      (kill-buffer (pi-mode-session-buffer s1)))))
+
 (ert-deftest pi-mode-test-ghostel-launch-args ()
   "Launch resolves pi via exec-path and passes args to ghostel-exec."
   (pi-mode-test-with-mock-ghostel
@@ -587,17 +654,28 @@ Regression: stale use-package :config blocks calling
       (kill-buffer b) (delete-process p))))
 
 (ert-deftest pi-mode-test-display-buffer-entry ()
-  "The display-buffer-alist entry displays pi buffers in a side window.
+  "Session buffers are displayed in a side window via the predicate condition.
 Regression: a dotted (REGEXP . FUNCTION) entry makes `display-buffer'
 error with `wrong type argument: listp' — the entry must be a proper
 list so the action unwraps to a function list."
   (let ((b (get-buffer-create "*pi[entry]*")))
     (unwind-protect
+        (with-current-buffer b
+          (setq-local pi-mode--session (make-pi-mode-session :id "*pi[entry]*"))
+          (let ((window (display-buffer b)))
+            (should (windowp window))
+            (should (eq (window-buffer window) b))
+            (should (eq (window-parameter window 'window-side)
+                        pi-mode-window-side))))
+      (kill-buffer b))))
+
+(ert-deftest pi-mode-test-display-buffer-non-session-ignored ()
+  "Non-session buffers are not affected by the pi-mode alist entry."
+  (let ((b (get-buffer-create "*plain*")))
+    (unwind-protect
         (let ((window (display-buffer b)))
           (should (windowp window))
-          (should (eq (window-buffer window) b))
-          (should (eq (window-parameter window 'window-side)
-                      pi-mode-window-side)))
+          (should-not (window-parameter window 'window-side)))
       (kill-buffer b))))
 
 (ert-deftest pi-mode-test-window-commands-no-error ()

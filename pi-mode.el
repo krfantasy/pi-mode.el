@@ -70,6 +70,33 @@ When nil, `project-current' is used with `default-directory' as fallback."
                   (project-root proj)))))
     (or root default-directory)))
 
+(defcustom pi-mode-buffer-name-function nil
+  "Function returning the base buffer name for a pi session.
+Called with (DIRECTORY &optional NAME); returns a buffer name string.
+The <N> collision uniquifier is applied afterwards.  When nil, the
+default \"*pi[project]*\" / \"*pi[project:name]*\" naming is used."
+  :type '(choice (const :tag "Default naming" nil) function)
+  :group 'pi)
+
+(defun pi-mode--session-base-name (project-root &optional name)
+  "Base buffer name for PROJECT-ROOT and optional session NAME."
+  (if pi-mode-buffer-name-function
+      (funcall pi-mode-buffer-name-function project-root name)
+    (let ((project (file-name-nondirectory (directory-file-name project-root))))
+      (if name (format "*pi[%s:%s]*" project name)
+        (format "*pi[%s]*" project)))))
+
+(defun pi-mode--session-buffer-p (buffer-or-name &rest _args)
+  "Non-nil when BUFFER-OR-NAME hosts a pi session.
+Accepts a buffer object or a buffer name string: `buffer-match-p'
+calls condition predicates with the buffer name plus the action
+alist as ARGS."
+  (let ((buffer (if (bufferp buffer-or-name) buffer-or-name
+                  (get-buffer buffer-or-name))))
+    (and buffer
+         (buffer-live-p buffer)
+         (buffer-local-value 'pi-mode--session buffer))))
+
 ;;; Sessions
 
 (cl-defstruct pi-mode-session
@@ -201,10 +228,8 @@ receives it trimmed."
   "Create an unregistered session struct for PROJECT-ROOT in a new buffer.
 Registration happens in `pi-mode--launch-buffer' after a successful
 launch, so a failed launch leaves nothing behind."
-  (let* ((base (format "*pi[%s]*"
-                         (file-name-nondirectory (directory-file-name project-root))))
-         (buffer-name (pi-mode--unique-buffer-name
-                       (if name (format "%s:%s" base name) base))))
+  (let* ((base (pi-mode--session-base-name project-root name))
+         (buffer-name (pi-mode--unique-buffer-name base)))
     (with-current-buffer (get-buffer-create buffer-name)
       ;; The session buffer owns the project root as its local
       ;; `default-directory': the dynamic binding in
@@ -437,7 +462,7 @@ visible side by side instead of evicting each other."
 ;; (REGEXP FUNCTIONS...) — a dotted (REGEXP . FUNCTION) form yields a
 ;; bare symbol action, which `display-buffer' cannot unwrap.
 (add-to-list 'display-buffer-alist
-             '("\\*pi\\[" pi-mode--display-buffer))
+             (list #'pi-mode--session-buffer-p #'pi-mode--display-buffer))
 
 (defvar pi-mode--panel-hidden nil)
 
