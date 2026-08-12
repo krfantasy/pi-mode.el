@@ -582,6 +582,9 @@
   (should (commandp 'pi-mode-menu))
   (should (commandp 'pi-mode-config-menu))
   (should (commandp 'pi-mode-debug-menu))
+  (should (commandp 'pi-mode-status-menu))
+  (should (commandp 'pi-mode-check-status))
+  (should (commandp 'pi-mode-show-version-info))
   (dolist (cmd '(pi-mode-session-continue pi-mode-session-resume
                  pi-mode-session-fork pi-mode-session-rename
                  pi-mode-session-stop pi-mode-session-stop-all

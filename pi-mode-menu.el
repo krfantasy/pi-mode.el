@@ -17,13 +17,14 @@
 (require 'transient)
 (require 'pi-mode)
 (require 'pi-mode-session)
+(require 'pi-mode-status)
 
 ;;;###autoload
 (transient-define-prefix pi-mode-menu ()
   "Command menu for pi-mode sessions.
 Key layout follows claude-code-ide.el: session s/c/r/q/Q/R/l,
 navigation b/w/W/a, interaction i/f/e, submenus C/d."
-  [:description "pi-mode"
+  [:description pi-mode--session-status
    :class transient-columns
    ["Session"
     ("s" "Start" pi-mode-start)
@@ -45,7 +46,8 @@ navigation b/w/W/a, interaction i/f/e, submenus C/d."
     ("e" "Interrupt" pi-mode-interrupt)]
    ["Submenus"
     ("C" "Configuration" pi-mode-config-menu)
-    ("d" "Debugging" pi-mode-debug-menu)]])
+    ("d" "Debugging" pi-mode-debug-menu)
+    ("S" "Status" pi-mode-status-menu)]])
 
 (transient-define-prefix pi-mode-config-menu ()
   "pi-mode configuration menu."
@@ -62,6 +64,13 @@ navigation b/w/W/a, interaction i/f/e, submenus C/d."
    ["Debug"
     ("l" "Log buffer" pi-mode-show-debug)
     ("d" "Debug on/off" pi-mode-toggle-debug)]])
+
+(transient-define-prefix pi-mode-status-menu ()
+  "pi-mode status menu."
+  [:description "pi-mode Status"
+   ["Status"
+    ("s" "Check CLI status" pi-mode-check-status)
+    ("v" "Version info" pi-mode-show-version-info)]])
 
 (provide 'pi-mode-menu)
 ;;; pi-mode-menu.el ends here
