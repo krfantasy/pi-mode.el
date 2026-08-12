@@ -497,6 +497,17 @@
                  pi-mode-configure-cli-args))
     (should (commandp cmd))))
 
+(ert-deftest pi-mode-test-install-keybindings-shim ()
+  "The removed keybinding installer is an obsolete no-op compat shim.
+Regression: stale use-package :config blocks calling
+`pi-mode-install-keybindings' must not error (void-function)."
+  (should (functionp 'pi-mode-install-keybindings))
+  (should (get 'pi-mode-install-keybindings 'byte-obsolete-info))
+  ;; The shim must return without signaling.
+  (should (condition-case nil
+              (progn (pi-mode-install-keybindings t) t)
+            (error nil))))
+
 (ert-deftest pi-mode-test-global-menu-binding ()
   "C-c C-' is bound to pi-mode-menu globally."
   (should (eq (lookup-key (current-global-map) (kbd "C-c C-'"))

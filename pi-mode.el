@@ -199,10 +199,16 @@ receives it trimmed."
 Registration happens in `pi-mode--launch-buffer' after a successful
 launch, so a failed launch leaves nothing behind."
   (let* ((base (format "*pi[%s]*"
-                       (file-name-nondirectory (directory-file-name project-root))))
+                         (file-name-nondirectory (directory-file-name project-root))))
          (buffer-name (pi-mode--unique-buffer-name
                        (if name (format "%s:%s" base name) base))))
     (with-current-buffer (get-buffer-create buffer-name)
+      ;; The session buffer owns the project root as its local
+      ;; `default-directory': the dynamic binding in
+      ;; `pi-mode--ghostel-launch' is shadowed by the buffer-local
+      ;; value inherited at creation, so without this the process would
+      ;; launch in whatever directory the caller happened to be in.
+      (setq-local default-directory project-root)
       (let ((session (make-pi-mode-session
                       :id buffer-name :name name :buffer (current-buffer)
                       :project-root project-root :last-used (current-time))))
@@ -481,6 +487,19 @@ visible side by side instead of evicting each other."
   (interactive)
   (setq pi-mode-debug (not pi-mode-debug))
   (message "pi-mode debug %s" (if pi-mode-debug "on" "off")))
+
+;;;###autoload
+(defun pi-mode-install-keybindings (&optional _force)
+  "Compatibility shim for the removed pi-side keybinding installer.
+pi-mode no longer writes pi's keybindings.json: ghostel semi-char mode
+delivers nearly every key to pi, and `C-c C-q' sends any intercepted
+key literally.  This stub exists so stale `use-package' `:config'
+blocks calling `pi-mode-install-keybindings' do not error; delete the
+call from your configuration."
+  (interactive "P")
+  (message "pi-mode: pi-side keybinding installation was removed; drop (pi-mode-install-keybindings) from your config"))
+
+(make-obsolete 'pi-mode-install-keybindings 'ignore "0.2.0")
 
 ;;; Configure commands (spec 8 Configure group)
 
