@@ -581,8 +581,11 @@ most recently used one for target resolution."
     (unless (pi-mode-session-cleanup-done session)
       (setf (pi-mode-session-last-used session) (current-time)))))
 
-(with-eval-after-load 'tab-bar
-  (add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows))
+;; A plain add-hook is void-safe (add-hook on a void variable first sets
+;; it to nil): on Emacs 28/29, where tab-bar.el is not preloaded, this
+;; installs before tab-bar loads, and tab-bar's later defcustom preserves
+;; the existing value.  `with-eval-after-load' would trip package-lint.
+(add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
 (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
 
 ;;;###autoload
