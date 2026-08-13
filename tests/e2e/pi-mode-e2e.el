@@ -345,5 +345,101 @@ hides and restores them."
               (ignore-errors (kill-buffer (pi-mode-session-buffer second))))))
       (delete-directory project-root t))))
 
+;;; Prompt editing e2e
+
+(defun pi-mode-e2e--prompt-edit-popup (session)
+  "The prompt-edit popup buffer for SESSION."
+  (get-buffer (format "*pi prompt %s*" (pi-mode-session-id session))))
+
+(ert-deftest pi-mode-e2e-test-edit-prompt-roundtrip ()
+  "edit-prompt captures pi's input box into a markdown popup; C-c C-c
+syncs the edited text back into pi's input box without submitting."
+  (pi-mode-e2e-server-start)
+  (let ((project-root (make-temp-file "pi-e2e-proj-" t))
+        (marker "e2e-edit-prompt-marker"))
+    (unwind-protect
+        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+          (should (pi-mode-e2e--wait-ready process buffer project-root))
+          (with-temp-buffer
+            (insert (format "line1 %s\nline2" marker))
+            (pi-mode-send-region (point-min) (point-max)))
+          (should (pi-mode-e2e--wait-input process buffer marker))
+          (with-current-buffer buffer
+            (pi-mode-edit-prompt))
+          (let ((popup (pi-mode-e2e--prompt-edit-popup session)))
+            (should popup)
+            (should (equal (with-current-buffer popup (buffer-string))
+                           (format "line1 %s\nline2" marker)))
+            (should (with-current-buffer popup pi-mode-prompt-edit-mode))
+            (with-current-buffer popup
+              (goto-char (point-max))
+              (insert " EDITED")
+              (pi-mode-prompt-edit-submit))
+            ;; The popup closed and the edited prompt is in pi's input box.
+            (should-not (buffer-live-p popup))
+            (should (pi-mode-e2e--wait-input process buffer "EDITED"))
+            (should (pi-mode-e2e--wait-input process buffer marker))
+            ;; Nothing was submitted to the model.
+            (should-not (pi-mode-e2e--session-jsonl agent-dir))))
+      (delete-directory project-root t))))
+
+(ert-deftest pi-mode-e2e-test-edit-prompt-long-line-wrap ()
+  "A prompt line wider than the editor wraps on screen; extraction
+rejoins the wrap so the popup and the synced input box hold the
+original single line."
+  (pi-mode-e2e-server-start)
+  (let ((project-root (make-temp-file "pi-e2e-proj-" t))
+        (long (concat "e2e-edit-wrap-" (make-string 100 ?x))))
+    (unwind-protect
+        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+          (should (pi-mode-e2e--wait-ready process buffer project-root))
+          (with-temp-buffer
+            (insert (format "%s\ntail-line" long))
+            (pi-mode-send-region (point-min) (point-max)))
+          (should (pi-mode-e2e--wait-input process buffer "e2e-edit-wrap-"))
+          (with-current-buffer buffer
+            (pi-mode-edit-prompt))
+          (let ((popup (pi-mode-e2e--prompt-edit-popup session)))
+            (should popup)
+            ;; The wrap is rejoined: one logical line plus the tail.
+            (should (equal (with-current-buffer popup (buffer-string))
+                           (format "%s\ntail-line" long)))
+            (with-current-buffer popup
+              (pi-mode-prompt-edit-submit))
+            (should-not (buffer-live-p popup))
+            ;; Both the head and the tail of the synced prompt are in
+            ;; pi's input box (rendered wrapped, so compare in pieces).
+            (should (pi-mode-e2e--wait-input process buffer "e2e-edit-wrap-"))
+            (should (pi-mode-e2e--wait-input process buffer "tail-line"))
+            (should-not (pi-mode-e2e--session-jsonl agent-dir))))
+      (delete-directory project-root t))))
+
+(ert-deftest pi-mode-e2e-test-edit-prompt-cancel ()
+  "C-c C-k discards the edit: the popup closes and pi's input box
+keeps the original prompt."
+  (pi-mode-e2e-server-start)
+  (let ((project-root (make-temp-file "pi-e2e-proj-" t))
+        (marker "e2e-edit-cancel-marker"))
+    (unwind-protect
+        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+          (should (pi-mode-e2e--wait-ready process buffer project-root))
+          (with-temp-buffer
+            (insert marker)
+            (pi-mode-send-region (point-min) (point-max)))
+          (should (pi-mode-e2e--wait-input process buffer marker))
+          (with-current-buffer buffer
+            (pi-mode-edit-prompt))
+          (let ((popup (pi-mode-e2e--prompt-edit-popup session)))
+            (should popup)
+            (with-current-buffer popup
+              (goto-char (point-max))
+              (insert " NOPE")
+              (pi-mode-prompt-edit-cancel))
+            (should-not (buffer-live-p popup))
+            ;; pi's input box still holds the original prompt.
+            (should (pi-mode-e2e--wait-input process buffer marker))
+            (should-not (string-match-p "NOPE" (pi-mode-e2e--buffer-text buffer)))))
+      (delete-directory project-root t))))
+
 (provide 'pi-mode-e2e)
 ;;; pi-mode-e2e.el ends here

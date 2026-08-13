@@ -11,8 +11,8 @@
 
 ;;; Commentary:
 ;; Run the pi coding agent inside a ghostel terminal buffer with project
-;; detection, prompt-input region sending, session management, and a
-;; transient command menu.  Design spec:
+;; detection, prompt-input region sending, prompt editing in a markdown
+;; popup, session management, and a transient command menu.  Design spec:
 ;; docs/superpowers/specs/2026-08-11-pi-mode-design.md
 
 ;;; Code:
@@ -388,6 +388,227 @@ to send it."
     (pi-mode-log "interrupt sent")))
 
 (define-key pi-mode-map (kbd "C-<escape>") #'pi-mode-interrupt)
+(define-key pi-mode-map (kbd "C-c C-i") #'pi-mode-edit-prompt)
+
+;;; Prompt editing
+
+(defcustom pi-mode-prompt-editor-padding-x 0
+  "Fallback horizontal padding (in columns) of pi's TUI prompt editor.
+Used when pi's own `editorPaddingX' setting cannot be read from its
+settings files; see `pi-mode--prompt-editor-padding'."
+  :type 'integer
+  :group 'pi)
+
+(defun pi-mode--read-editor-padding-file (file)
+  "Return pi's `editorPaddingX' from settings FILE, or nil."
+  (when (file-readable-p file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (when-let* ((json (ignore-errors (json-parse-string (buffer-string))))
+                  (padding (gethash "editorPaddingX" json)))
+        (and (integerp padding) (<= 0 padding) padding)))))
+
+(defun pi-mode--prompt-editor-padding (&optional session)
+  "pi's prompt-editor side padding for SESSION (columns).
+Reads `editorPaddingX' from pi's settings files — the project
+`.pi/settings.json' first, then the agent `settings.json' — mirroring
+pi's own precedence; falls back to `pi-mode-prompt-editor-padding-x'."
+  (let* ((agent-dir (or (getenv "PI_CODING_AGENT_DIR")
+                        (expand-file-name "~/.pi/agent")))
+         (project-settings
+          (and session
+               (expand-file-name ".pi/settings.json"
+                                 (pi-mode-session-project-root session))))
+         (padding (or (and project-settings
+                           (pi-mode--read-editor-padding-file project-settings))
+                      (pi-mode--read-editor-padding-file
+                       (expand-file-name "settings.json" agent-dir)))))
+    (or padding pi-mode-prompt-editor-padding-x)))
+
+(defun pi-mode--prompt-border-row-p (row)
+  "Non-nil when ROW is a pi TUI prompt-editor border row.
+The editor draws a full-width line of `─' above and below the input
+box; when the editor is internally scrolled (prompt taller than the
+visible area) the border carries a \"─── ↑ N more \" / \"─── ↓ N more \"
+indicator instead."
+  (or (string-match-p "\\`─+\\'" row)
+      (string-match-p "\\`─── [↑↓]" row)))
+
+(defun pi-mode--prompt-border-above (rows cursor-row)
+  "Index of the editor border row above CURSOR-ROW in ROWS, or nil."
+  (let ((i (1- cursor-row)))
+    (while (and (>= i 0) (not (pi-mode--prompt-border-row-p (nth i rows))))
+      (cl-decf i))
+    (and (>= i 0) i)))
+
+(defun pi-mode--prompt-border-below (rows cursor-row)
+  "Index of the editor border row below CURSOR-ROW in ROWS, or nil."
+  (let ((i (1+ cursor-row)))
+    (while (and (< i (length rows))
+                (not (pi-mode--prompt-border-row-p (nth i rows))))
+      (cl-incf i))
+    (and (< i (length rows)) i)))
+
+(defun pi-mode--prompt-join-lines (lines wrap-width)
+  "Rejoin pi editor LINES (visual wraps) into logical prompt text.
+pi's editor wraps long lines instead of scrolling horizontally, so a
+line that exactly fills WRAP-WIDTH columns (pi's layout width) is a
+visual continuation of the previous logical line and joins it without
+a newline.  (A logical line of exactly WRAP-WIDTH columns followed by
+another line is indistinguishable from a wrap and is joined too — a
+deliberate, documented approximation.)"
+  (let ((parts nil) (prev-full nil))
+    (dolist (line lines)
+      (when parts
+        (push (if prev-full "" "\n") parts))
+      (push line parts)
+      (setq prev-full (= (string-width line) wrap-width)))
+    (apply #'concat (nreverse parts))))
+
+(defun pi-mode--prompt-extract (rows cursor-row &optional padding-x)
+  "Extract the prompt text from pi's TUI screen ROWS.
+ROWS is the terminal screen as a list of strings; CURSOR-ROW the
+0-based index of the row holding the terminal cursor (the prompt
+editor keeps the cursor visible, so it anchors the input region).
+PADDING-X is the editor's side padding (default
+`pi-mode-prompt-editor-padding-x').
+
+Returns (CONTENT . SCROLLED-P), or nil when no editor border frames
+the cursor row (the input box cannot be located).  SCROLLED-P is
+non-nil when the editor is internally scrolled, meaning ROWS show
+only part of the prompt."
+  (let* ((padding-x (or padding-x pi-mode-prompt-editor-padding-x))
+         (top (pi-mode--prompt-border-above rows cursor-row))
+         (bottom (pi-mode--prompt-border-below rows cursor-row)))
+    (when (and top bottom)
+      (let* ((region (cl-subseq rows (1+ top) bottom))
+             (width (apply #'max (mapcar #'string-width
+                                         (append region
+                                                 (list (nth top rows)
+                                                       (nth bottom rows))))))
+             (scrolled (not (not (or (string-match-p "\\`─── [↑↓]" (nth top rows))
+                                     (string-match-p "\\`─── [↑↓]" (nth bottom rows))))))
+             (lines (mapcar (lambda (row)
+                              (string-trim-right
+                               (if (>= (length row) padding-x)
+                                   (substring row padding-x)
+                                 row)))
+                            region))
+             ;; pi wraps at the layout width: the content width, minus one
+             ;; column reserved for the cursor when there is no padding.
+             (wrap-width (- width (* 2 padding-x)
+                            (if (zerop padding-x) 1 0))))
+        (cons (pi-mode--prompt-join-lines lines wrap-width)
+              scrolled)))))
+
+(defun pi-mode--prompt-screen-rows ()
+  "Return (ROWS . CURSOR-ROW) for the current ghostel buffer, or nil.
+ROWS is the terminal screen (viewport) as a list of strings;
+CURSOR-ROW the 0-based viewport row of the terminal cursor."
+  (when-let* ((vp-start (ghostel--viewport-start))
+              (cursor-point (ghostel-cursor-point))
+              (cursor-row (ghostel--viewport-row-at cursor-point)))
+    (let ((rows (split-string
+                 (buffer-substring-no-properties vp-start (point-max)) "\n")))
+      (when (equal (car (last rows)) "")
+        (setq rows (butlast rows)))
+      (when (< cursor-row (length rows))
+        (cons rows cursor-row)))))
+
+(defun pi-mode--read-prompt (session)
+  "Read the prompt currently in SESSION's pi input box.
+Signals `user-error' when the input box cannot be located."
+  (let* ((padding (pi-mode--prompt-editor-padding session))
+         (screen (with-current-buffer (pi-mode-session-buffer session)
+                   (pi-mode--prompt-screen-rows)))
+         (extracted (and screen
+                         (pi-mode--prompt-extract (car screen) (cdr screen)
+                                                  padding))))
+    (unless extracted
+      (user-error "Cannot locate pi's prompt editor; is the pi TUI showing the input box?"))
+    (when (cdr extracted)
+      (message "pi-mode: prompt editor is scrolled; only the visible part was captured"))
+    (car extracted)))
+
+(defvar-local pi-mode--prompt-edit-session nil
+  "The pi session this prompt-edit buffer syncs back to.")
+
+(defvar pi-mode-prompt-edit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'pi-mode-prompt-edit-submit)
+    (define-key map (kbd "C-c C-k") #'pi-mode-prompt-edit-cancel)
+    map)
+  "Keymap for `pi-mode-prompt-edit-mode'.")
+
+(define-minor-mode pi-mode-prompt-edit-mode
+  "Minor mode for editing a pi prompt in a markdown buffer.
+
+\\<pi-mode-prompt-edit-mode-map>
+\\[pi-mode-prompt-edit-submit] replaces the prompt in pi's input box
+with this buffer's content and closes the buffer;
+\\[pi-mode-prompt-edit-cancel] discards the edit and closes the
+buffer without touching pi."
+  :lighter " π✎"
+  :keymap pi-mode-prompt-edit-mode-map)
+
+(defun pi-mode--prompt-edit-buffer-name (session)
+  "Buffer name for editing SESSION's prompt."
+  (format "*pi prompt %s*" (pi-mode-session-id session)))
+
+(defun pi-mode-prompt-edit-submit ()
+  "Replace the pi session's prompt with this buffer's content, then close.
+The session's input box is cleared (pi's app.clear) and the buffer
+content is pasted in; nothing is submitted, so press Return in the pi
+buffer to send the edited prompt."
+  (interactive)
+  (let ((session pi-mode--prompt-edit-session))
+    (unless (pi-mode--session-live-p session)
+      (user-error "The pi session is no longer running; the edit is kept in this buffer"))
+    (let ((text (string-trim-right (buffer-string))))
+      (with-current-buffer (pi-mode-session-buffer session)
+        (ghostel-send-key "c" "ctrl")) ; pi's app.clear: wipe the input box
+      (pi-mode--insert-text session text)
+      (let ((id (pi-mode-session-id session)))
+        (kill-buffer)
+        (message "Prompt synced to pi session %s" id)))))
+
+(defun pi-mode-prompt-edit-cancel ()
+  "Discard the edit and close the prompt-edit buffer without touching pi."
+  (interactive)
+  (kill-buffer))
+
+;;;###autoload
+(defun pi-mode-edit-prompt ()
+  "Edit the target pi session's prompt in a markdown popup buffer.
+
+Opens a buffer with the prompt currently in pi's input box, or
+switches to it when already open.  \\<pi-mode-prompt-edit-mode-map>
+\\[pi-mode-prompt-edit-submit] replaces the prompt in pi's input box
+with the edited text and closes the buffer; \\[pi-mode-prompt-edit-cancel]
+discards the edit.  With a prefix argument, prompts for the session."
+  (interactive)
+  (let* ((session (pi-mode--resolve-session current-prefix-arg))
+         (name (pi-mode--prompt-edit-buffer-name session))
+         (buffer (get-buffer name)))
+    (if (and (buffer-live-p buffer)
+             (buffer-local-value 'pi-mode--prompt-edit-session buffer))
+        (pop-to-buffer buffer)
+      (let ((text (pi-mode--read-prompt session)))
+        (with-current-buffer (get-buffer-create name)
+          ;; The major mode runs `kill-all-local-variables', so set the
+          ;; session local *after* it, before the minor mode.
+          (if (require 'markdown-mode nil t)
+              (unless (derived-mode-p 'markdown-mode)
+                (markdown-mode))
+            (text-mode))
+          (setq-local pi-mode--prompt-edit-session session)
+          (erase-buffer)
+          (insert text)
+          (goto-char (point-min))
+          (pi-mode-prompt-edit-mode +1)
+          (set-buffer-modified-p nil))
+        (pop-to-buffer name)
+        (pi-mode-log "prompt editor opened for %s" (pi-mode-session-id session))))))
 
 ;;; Region and file sending
 

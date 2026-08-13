@@ -592,6 +592,8 @@
                  pi-mode-send-region pi-mode-send-file
                  pi-mode-switch-buffer pi-mode-toggle-panel
                  pi-mode-show-all pi-mode-toggle-recent
+                 pi-mode-edit-prompt pi-mode-prompt-edit-submit
+                 pi-mode-prompt-edit-cancel
                  pi-mode-interrupt pi-mode-configure-model
                  pi-mode-configure-thinking pi-mode-configure-tui-mode
                  pi-mode-configure-cli-args))
@@ -1097,6 +1099,256 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
              (should (string-match-p "No active sessions" (pi-mode--session-status)))))
        (pi-mode--unregister-session "*pi[hs]*")
        (kill-buffer b) (delete-process p)))))
+
+;;; Prompt editing tests
+
+(defun pi-mode-test--screen (width &rest content)
+  "Build a fake pi TUI screen: a ─ border, CONTENT rows, a ─ border."
+  (let ((border (make-string width ?─)))
+    (append (list border) content (list border))))
+
+(ert-deftest pi-mode-test-prompt-border-row-p ()
+  "Border detection covers full and scrolled indicator rows."
+  (should (pi-mode--prompt-border-row-p "──────"))
+  (should (pi-mode--prompt-border-row-p "─── ↑ 2 more ─────"))
+  (should (pi-mode--prompt-border-row-p "─── ↓ 5 more ─────"))
+  (should-not (pi-mode--prompt-border-row-p "  hello"))
+  (should-not (pi-mode--prompt-border-row-p "─── not a border")))
+
+(ert-deftest pi-mode-test-prompt-extract-single-line ()
+  "A single input row inside the borders is the prompt."
+  (let* ((rows (pi-mode-test--screen 10 "hello"))
+         (got (pi-mode--prompt-extract rows 1)))
+    (should (equal got '("hello" . nil)))))
+
+(ert-deftest pi-mode-test-prompt-extract-wrapped-line ()
+  "A row that exactly fills the layout width joins its successor (wrap)."
+  ;; width 10, default padding 0 → layout width 9 (one column reserved
+  ;; for the cursor): the first row is full.
+  (let* ((rows (pi-mode-test--screen 10 "abcdefghi" "jk"))
+         (got (pi-mode--prompt-extract rows 1)))
+    (should (equal got '("abcdefghijk" . nil)))))
+
+(ert-deftest pi-mode-test-prompt-extract-multiline ()
+  "Logical lines inside the input box are joined with newlines."
+  (let* ((rows (pi-mode-test--screen 10 "line1" "line2"))
+         (got (pi-mode--prompt-extract rows 1)))
+    (should (equal got '("line1\nline2" . nil)))))
+
+(ert-deftest pi-mode-test-prompt-extract-empty-input ()
+  "An empty input box extracts an empty prompt."
+  (let* ((rows (pi-mode-test--screen 10 ""))
+         (got (pi-mode--prompt-extract rows 1)))
+    (should (equal got '("" . nil)))))
+
+(ert-deftest pi-mode-test-prompt-extract-scrolled ()
+  "Scrolled editor borders mark the capture as partial."
+  (let* ((rows (list "─── ↑ 2 more ─────" "hello" (make-string 10 ?─)))
+         (got (pi-mode--prompt-extract rows 1)))
+    (should (equal (car got) "hello"))
+    (should (cdr got)))
+  (let* ((rows (list (make-string 10 ?─) "hello" "─── ↓ 3 more ─────"))
+         (got (pi-mode--prompt-extract rows 1)))
+    (should (equal (car got) "hello"))
+    (should (cdr got))))
+
+(ert-deftest pi-mode-test-prompt-extract-no-input-box ()
+  "No border framing the cursor row means the input box is not visible."
+  (should-not (pi-mode--prompt-extract '("hello" "world") 1))
+  ;; cursor on a border row itself
+  (should-not (pi-mode--prompt-extract (pi-mode-test--screen 10 "x") 0))
+  ;; cursor on the bottom border
+  (should-not (pi-mode--prompt-extract (pi-mode-test--screen 10 "x") 2)))
+
+(ert-deftest pi-mode-test-prompt-editor-padding ()
+  "Padding resolution: project settings, then global settings, then fallback."
+  (let* ((agent-dir (make-temp-file "pi-pad-agent-" t))
+         (project (make-temp-file "pi-pad-proj-" t))
+         (global (expand-file-name "settings.json" agent-dir))
+         (project-file (expand-file-name ".pi/settings.json" project))
+         (session (make-pi-mode-session :id "*pi[pad]*"
+                                        :buffer (get-buffer-create "*pi[pad]*")
+                                        :process (pi-mode-test--fake-process)
+                                        :project-root project)))
+    (unwind-protect
+        (progn
+          (setenv "PI_CODING_AGENT_DIR" agent-dir)
+          ;; No settings files: the defcustom fallback.
+          (let ((pi-mode-prompt-editor-padding-x 2))
+            (should (= (pi-mode--prompt-editor-padding session) 2)))
+          ;; Global settings only.
+          (write-region "{\"editorPaddingX\": 1}" nil global)
+          (should (= (pi-mode--prompt-editor-padding session) 1))
+          ;; Project settings win over global.
+          (make-directory (file-name-directory project-file) t)
+          (write-region "{\"editorPaddingX\": 3}" nil project-file)
+          (should (= (pi-mode--prompt-editor-padding session) 3))
+          ;; Malformed JSON falls back.
+          (write-region "{not json" nil project-file)
+          (should (= (pi-mode--prompt-editor-padding session) 1)))
+      (setenv "PI_CODING_AGENT_DIR" nil)
+      (delete-directory agent-dir t)
+      (delete-directory project t)
+      (kill-buffer "*pi[pad]*"))))
+
+(ert-deftest pi-mode-test-prompt-screen-rows ()
+  "Screen rows are read from the viewport with the cursor row index."
+  (with-temp-buffer
+    (insert "scrollback line\n───\n  hello\n───\n")
+    (let* ((vp-start (+ (point-min) (length "scrollback line\n")))
+           (cursor-pos (+ (point-min) (string-match "hello" (buffer-string)))))
+      (cl-letf (((symbol-function 'ghostel--viewport-start)
+                 (lambda () vp-start))
+                ((symbol-function 'ghostel-cursor-point)
+                 (lambda () cursor-pos))
+                ((symbol-function 'ghostel--viewport-row-at)
+                 (lambda (_pos) 1)))
+        (let ((got (pi-mode--prompt-screen-rows)))
+          (should (equal (car got) '("───" "  hello" "───")))
+          (should (equal (cdr got) 1)))))))
+
+(ert-deftest pi-mode-test-edit-prompt-opens-popup ()
+  "edit-prompt opens a markdown popup seeded with the current prompt."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (insert "scrollback\n──────\nhello pi\n──────\n")
+             (cl-letf (((symbol-function 'ghostel--viewport-start)
+                        (lambda () (point-min)))
+                       ((symbol-function 'ghostel-cursor-point)
+                        (lambda () (+ (point-min) (length "scrollback\n──────\n"))))
+                       ((symbol-function 'ghostel--viewport-row-at)
+                        (lambda (_pos) 2)))
+               (pi-mode-edit-prompt)))
+           (let ((popup (get-buffer "*pi prompt *pi[pe]**")))
+             (should popup)
+             (should (equal (with-current-buffer popup (buffer-string))
+                            "hello pi"))
+             (should (with-current-buffer popup pi-mode-prompt-edit-mode))
+             (should (eq (with-current-buffer popup pi-mode--prompt-edit-session)
+                         s))
+             (should (with-current-buffer popup (derived-mode-p 'text-mode)))
+             (should (get-buffer-window popup)))
+           (kill-buffer "*pi prompt *pi[pe]**"))
+       (pi-mode--unregister-session "*pi[pe]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-edit-prompt-reopen-switches ()
+  "A second edit-prompt call switches to the existing popup instead of duplicating."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe2]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe2]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (insert "──────\nhi\n──────\n")
+             (cl-letf (((symbol-function 'ghostel--viewport-start)
+                        (lambda () (point-min)))
+                       ((symbol-function 'ghostel-cursor-point)
+                        (lambda () (+ (point-min) (length "──────\n"))))
+                       ((symbol-function 'ghostel--viewport-row-at)
+                        (lambda (_pos) 1)))
+               (pi-mode-edit-prompt)
+               (pi-mode-edit-prompt)))
+           (let ((popup (get-buffer "*pi prompt *pi[pe2]**")))
+             (should popup)
+             ;; Only one prompt-edit buffer exists (no duplicate on reopen).
+             (should (= 1 (length (cl-remove-if-not
+                                   (lambda (x)
+                                     (string-match-p "pi prompt" (buffer-name x)))
+                                   (buffer-list)))))
+             (should (get-buffer-window popup)))
+           (kill-buffer "*pi prompt *pi[pe2]**"))
+       (pi-mode--unregister-session "*pi[pe2]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-prompt-edit-submit-syncs ()
+  "C-c C-c clears pi's input box, pastes the edited text, and closes."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe3]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe3]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (popup (get-buffer-create "*pi prompt *pi[pe3]**")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer popup
+             (setq-local pi-mode--prompt-edit-session s)
+             (insert "hello")
+             (pi-mode-prompt-edit-mode +1)
+             (goto-char (point-max))
+             (insert " EDITED")
+             (pi-mode-prompt-edit-submit))
+           (should-not (buffer-live-p popup))
+           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                          '("c" "ctrl")))
+           (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                          '("hello EDITED"))))
+       (pi-mode--unregister-session "*pi[pe3]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-prompt-edit-submit-dead-session ()
+  "Submit against a dead session keeps the edit and signals user-error."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe4]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe4]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (popup (get-buffer-create "*pi prompt *pi[pe4]**")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (delete-process p)
+           (with-current-buffer popup
+             (setq-local pi-mode--prompt-edit-session s)
+             (insert "draft")
+             (should-error (pi-mode-prompt-edit-submit) :type 'user-error))
+           ;; The edit survives in the popup.
+           (should (buffer-live-p popup))
+           (should (equal (with-current-buffer popup (buffer-string)) "draft"))
+           (should-not pi-mode-test--calls))
+       (pi-mode--unregister-session "*pi[pe4]*")
+       (kill-buffer b)
+       (kill-buffer popup)))))
+
+(ert-deftest pi-mode-test-prompt-edit-cancel ()
+  "C-c C-k closes the popup without touching pi."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe5]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe5]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (popup (get-buffer-create "*pi prompt *pi[pe5]**")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer popup
+             (setq-local pi-mode--prompt-edit-session s)
+             (insert "hello")
+             (pi-mode-prompt-edit-mode +1)
+             (pi-mode-prompt-edit-cancel))
+           (should-not (buffer-live-p popup))
+           (should-not pi-mode-test--calls))
+       (pi-mode--unregister-session "*pi[pe5]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-prompt-edit-keybinding ()
+  "C-c C-i in pi-mode-map runs pi-mode-edit-prompt; C-c C-c / C-c C-k drive the popup."
+  (should (eq (lookup-key pi-mode-map (kbd "C-c C-i")) 'pi-mode-edit-prompt))
+  (should (eq (lookup-key pi-mode-prompt-edit-mode-map (kbd "C-c C-c"))
+              'pi-mode-prompt-edit-submit))
+  (should (eq (lookup-key pi-mode-prompt-edit-mode-map (kbd "C-c C-k"))
+              'pi-mode-prompt-edit-cancel)))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here
