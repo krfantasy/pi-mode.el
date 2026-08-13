@@ -543,13 +543,23 @@ Signals `user-error' when the input box cannot be located."
 (define-minor-mode pi-mode-prompt-edit-mode
   "Minor mode for editing a pi prompt in a markdown buffer.
 
-\\<pi-mode-prompt-edit-mode-map>
-\\[pi-mode-prompt-edit-submit] replaces the prompt in pi's input box
-with this buffer's content and closes the buffer;
-\\[pi-mode-prompt-edit-cancel] discards the edit and closes the
-buffer without touching pi."
+The buffer shows a separedit-style header line with the
+instructions: \\<pi-mode-prompt-edit-mode-map>
+\\[pi-mode-prompt-edit-submit] finishes (\"Finish\") and replaces the
+prompt in pi's input box with this buffer's content;
+\\[pi-mode-prompt-edit-cancel] aborts (\"Abort\") and discards the
+edit without touching pi."
   :lighter " π✎"
-  :keymap pi-mode-prompt-edit-mode-map)
+  :keymap pi-mode-prompt-edit-mode-map
+  (if pi-mode-prompt-edit-mode
+      (setq-local header-line-format
+                  (substitute-command-keys
+                   (concat "*pi prompt* "
+                           (mapconcat #'identity
+                                      '("\\[pi-mode-prompt-edit-submit]: Finish"
+                                        "\\[pi-mode-prompt-edit-cancel]: Abort")
+                                      ", "))))
+    (kill-local-variable 'header-line-format)))
 
 (defun pi-mode--prompt-edit-buffer-name (session)
   "Buffer name for editing SESSION's prompt."

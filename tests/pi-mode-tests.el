@@ -1231,6 +1231,8 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
              (should (equal (with-current-buffer popup (buffer-string))
                             "hello pi"))
              (should (with-current-buffer popup pi-mode-prompt-edit-mode))
+             (should (with-current-buffer popup
+                       (string-match-p "Finish" (or header-line-format ""))))
              (should (eq (with-current-buffer popup pi-mode--prompt-edit-session)
                          s))
              (should (with-current-buffer popup (derived-mode-p 'text-mode)))
@@ -1349,6 +1351,19 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
               'pi-mode-prompt-edit-submit))
   (should (eq (lookup-key pi-mode-prompt-edit-mode-map (kbd "C-c C-k"))
               'pi-mode-prompt-edit-cancel)))
+
+(ert-deftest pi-mode-test-prompt-edit-header ()
+  "The popup shows a separedit-style header with Finish/Abort instructions."
+  (with-temp-buffer
+    (pi-mode-prompt-edit-mode +1)
+    (should (string-match-p "C-c C-c: Finish" header-line-format))
+    (should (string-match-p "C-c C-k: Abort" header-line-format))
+    (should (string-match-p "^\*pi prompt\*" header-line-format))
+    ;; The header is display-only: it must not be part of the buffer
+    ;; text that gets synced back to pi on submit.
+    (should (= (buffer-size) 0))
+    (pi-mode-prompt-edit-mode -1)
+    (should-not header-line-format)))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here
