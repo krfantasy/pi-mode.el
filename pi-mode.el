@@ -327,23 +327,33 @@ launch fails the scratch buffer is removed."
                              nil t)))
     (gethash id pi-mode--sessions)))
 
-(defun pi-mode--resolve-session (&optional prefix no-ask)
+(defun pi-mode--resolve-session (&optional prefix no-ask intent)
   "Resolve the target session for a command.
-PREFIX non-nil means the user gave C-u: prompt unless NO-ASK.
-Rules: in-buffer self; sole; sole-visible; else MRU with echo.
+The in-buffer session always wins first, whichever project it belongs
+to.  Otherwise resolution is scoped to the current project
+(`pi-mode--project-root'): PREFIX non-nil means the user gave C-u:
+prompt unless NO-ASK.  Rules: in-buffer self; sole; sole-visible;
+else INTENT `prompt' prompts instead of guessing, otherwise the MRU
+session is used with an echo.  Signals `user-error' when the current
+project has no live session.
 The resolved session's `last-used' is updated (MRU semantics)."
-  (let* ((sessions (pi-mode--active-sessions))
+  (let* ((root (pi-mode--project-root))
+         (sessions (pi-mode--project-sessions root))
          (session
           (cond
+           ((pi-mode--session-by-buffer (current-buffer)))
            ((null sessions)
-            (user-error "No running pi session; start one with `pi-mode-start'"))
+            (user-error
+             "No running pi sessions in project %s; start one with `pi-mode-start'"
+             root))
            ((and prefix (not no-ask))
             (pi-mode--prompt-session sessions))
-           ((pi-mode--session-by-buffer (current-buffer)))
            ((= (length sessions) 1)
             (car sessions))
            ((= (length (pi-mode--visible-sessions sessions)) 1)
             (car (pi-mode--visible-sessions sessions)))
+           ((and (eq intent 'prompt) (not no-ask))
+            (pi-mode--prompt-session sessions))
            (t
             (let ((mru (pi-mode--mru-session sessions)))
               (message "pi-mode: using session %s" (pi-mode-session-id mru))

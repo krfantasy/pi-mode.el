@@ -292,72 +292,180 @@
 
 (ert-deftest pi-mode-test-resolve-session-rules ()
   "Resolution: in-buffer self; sole; mru with echo; C-u prompts; no-ask."
-  (let ((b1 (get-buffer-create "*pi[r1]*"))
-        (b2 (get-buffer-create "*pi[r2]*"))
-        (p1 (pi-mode-test--fake-process))
-        (p2 (pi-mode-test--fake-process)))
-    (unwind-protect
-        (let ((s1 (make-pi-mode-session :id "*pi[r1]*" :buffer b1 :process p1
-                                        :project-root "/tmp/" :last-used (current-time)))
-              (s2 (make-pi-mode-session :id "*pi[r2]*" :buffer b2 :process p2
-                                        :project-root "/tmp/"
-                                        :last-used (time-add (current-time) 10))))
-          (pi-mode--register-session s1)
-          (pi-mode--register-session s2)
-          ;; in-buffer self → s1 (current buffer is b1)
-          (with-current-buffer b1
-            (should (eq (pi-mode--resolve-session nil) s1)))
-          ;; C-u prompts (mock completing-read → s2)
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (&rest _) "*pi[r2]*")))
-            (should (eq (pi-mode--resolve-session t) s2)))
-          ;; no-ask: skips prompt even with prefix, uses mru
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (&rest _) (error "should not prompt"))))
-            (should (eq (pi-mode--resolve-session t t) s2)))
-          (pi-mode--unregister-session "*pi[r1]*")
-          ;; rule 3: sole session → it (from an unrelated buffer)
-          (with-temp-buffer
-            (should (eq (pi-mode--resolve-session nil) s2)))
-          ;; no sessions → user-error
-          (pi-mode--unregister-session "*pi[r2]*")
-          (should-error (pi-mode--resolve-session nil) :type 'user-error))
-      (kill-buffer b1) (kill-buffer b2)
-      (delete-process p1) (delete-process p2))))
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+    (let ((b1 (get-buffer-create "*pi[r1]*"))
+          (b2 (get-buffer-create "*pi[r2]*"))
+          (b3 (get-buffer-create "*pi[r3]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (p3 (pi-mode-test--fake-process)))
+      (unwind-protect
+          (let ((s1 (make-pi-mode-session :id "*pi[r1]*" :buffer b1 :process p1
+                                          :project-root "/tmp/" :last-used (current-time)))
+                (s2 (make-pi-mode-session :id "*pi[r2]*" :buffer b2 :process p2
+                                          :project-root "/tmp/"
+                                          :last-used (time-add (current-time) 10)))
+                ;; foreign project, most recent of all: never resolved here
+                (s3 (make-pi-mode-session :id "*pi[r3]*" :buffer b3 :process p3
+                                          :project-root "/tmp/other/"
+                                          :last-used (time-add (current-time) 100))))
+            (pi-mode--register-session s1)
+            (pi-mode--register-session s2)
+            (pi-mode--register-session s3)
+            ;; in-buffer self → s1 (current buffer is b1), whichever project
+            (with-current-buffer b1
+              (should (eq (pi-mode--resolve-session nil) s1)))
+            ;; in-buffer self wins for the foreign project too
+            (with-current-buffer b3
+              (should (eq (pi-mode--resolve-session nil) s3)))
+            ;; C-u prompts (mock completing-read → s2)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) "*pi[r2]*")))
+              (should (eq (pi-mode--resolve-session t) s2)))
+            ;; no-ask: skips prompt even with prefix, uses mru
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) (error "should not prompt"))))
+              (should (eq (pi-mode--resolve-session t t) s2))
+              ;; ambiguous, no prefix: current project's MRU, not foreign s3
+              (should (eq (pi-mode--resolve-session nil nil) s2)))
+            (pi-mode--unregister-session "*pi[r1]*")
+            ;; rule 3: sole session → it (from an unrelated buffer)
+            (with-temp-buffer
+              (should (eq (pi-mode--resolve-session nil) s2)))
+            ;; no project sessions (only foreign s3) → user-error
+            ;; naming the current project
+            (pi-mode--unregister-session "*pi[r2]*")
+            (let ((err (should-error (pi-mode--resolve-session nil)
+                                      :type 'user-error)))
+              (should (string-match-p (regexp-quote "/tmp/") (cadr err)))))
+        (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
+        (delete-process p1) (delete-process p2) (delete-process p3)))))
 
 (ert-deftest pi-mode-test-resolve-updates-mru ()
   "Resolving a session updates last-used so it becomes the MRU session."
-  (let ((b1 (get-buffer-create "*pi[m1]*"))
-        (b2 (get-buffer-create "*pi[m2]*"))
-        (p1 (pi-mode-test--fake-process))
-        (p2 (pi-mode-test--fake-process)))
-    (unwind-protect
-        (let ((s1 (make-pi-mode-session :id "*pi[m1]*" :buffer b1 :process p1
-                                        :project-root "/tmp/"
-                                        :last-used (current-time)))
-              (s2 (make-pi-mode-session :id "*pi[m2]*" :buffer b2 :process p2
-                                        :project-root "/tmp/"
-                                        :last-used (time-add (current-time) -100))))
-          (pi-mode--register-session s1)
-          (pi-mode--register-session s2)
-          ;; s1 is newest; resolve s2 via the C-u prompt branch
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (&rest _) "*pi[m2]*")))
-            (should (eq (pi-mode--resolve-session t) s2)))
-          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
-          ;; resolving s1 again makes it MRU again
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (&rest _) "*pi[m1]*")))
-            (should (eq (pi-mode--resolve-session t) s1)))
-          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s1))
-          ;; in-buffer branch also updates
-          (with-current-buffer b2
-            (should (eq (pi-mode--resolve-session nil) s2)))
-          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
-          (pi-mode--unregister-session "*pi[m1]*")
-          (pi-mode--unregister-session "*pi[m2]*"))
-      (kill-buffer b1) (kill-buffer b2)
-      (delete-process p1) (delete-process p2))))
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+    (let ((b1 (get-buffer-create "*pi[m1]*"))
+          (b2 (get-buffer-create "*pi[m2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process)))
+      (unwind-protect
+          (let ((s1 (make-pi-mode-session :id "*pi[m1]*" :buffer b1 :process p1
+                                          :project-root "/tmp/"
+                                          :last-used (current-time)))
+                (s2 (make-pi-mode-session :id "*pi[m2]*" :buffer b2 :process p2
+                                          :project-root "/tmp/"
+                                          :last-used (time-add (current-time) -100))))
+            (pi-mode--register-session s1)
+            (pi-mode--register-session s2)
+            ;; s1 is newest; resolve s2 via the C-u prompt branch
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) "*pi[m2]*")))
+              (should (eq (pi-mode--resolve-session t) s2)))
+            (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+            ;; resolving s1 again makes it MRU again
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) "*pi[m1]*")))
+              (should (eq (pi-mode--resolve-session t) s1)))
+            (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s1))
+            ;; in-buffer branch also updates
+            (with-current-buffer b2
+              (should (eq (pi-mode--resolve-session nil) s2)))
+            (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+            (pi-mode--unregister-session "*pi[m1]*")
+            (pi-mode--unregister-session "*pi[m2]*"))
+        (kill-buffer b1) (kill-buffer b2)
+        (delete-process p1) (delete-process p2)))))
+
+(ert-deftest pi-mode-test-resolve-sole-foreign-errors ()
+  "A live session in another project is never resolved from this one."
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+    (let ((b (get-buffer-create "*pi[sf]*"))
+          (p (pi-mode-test--fake-process)))
+      (unwind-protect
+          (let ((s (make-pi-mode-session :id "*pi[sf]*" :buffer b :process p
+                                         :project-root "/tmp/other/"
+                                         :last-used (current-time))))
+            (pi-mode--register-session s)
+            ;; sole foreign session: the current project has none
+            (with-temp-buffer
+              (let ((err (should-error (pi-mode--resolve-session nil)
+                                        :type 'user-error)))
+                (should (string-match-p (regexp-quote "/tmp/") (cadr err)))))
+            ;; in-buffer self still wins, whichever project it belongs to
+            (with-current-buffer b
+              (should (eq (pi-mode--resolve-session nil) s))))
+        (pi-mode--unregister-session "*pi[sf]*")
+        (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-resolve-mru-ignores-foreign ()
+  "The MRU branch picks the current project's MRU, never a foreign one."
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+    (let ((b1 (get-buffer-create "*pi[f1]*"))
+          (b2 (get-buffer-create "*pi[f2]*"))
+          (bf (get-buffer-create "*pi[ff]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (pf (pi-mode-test--fake-process)))
+      (unwind-protect
+          (let ((s1 (make-pi-mode-session :id "*pi[f1]*" :buffer b1 :process p1
+                                          :project-root "/tmp/"
+                                          :last-used (current-time)))
+                (s2 (make-pi-mode-session :id "*pi[f2]*" :buffer b2 :process p2
+                                          :project-root "/tmp/"
+                                          :last-used (time-add (current-time) 10)))
+                ;; more recent than both, but foreign: must be ignored
+                (sf (make-pi-mode-session :id "*pi[ff]*" :buffer bf :process pf
+                                          :project-root "/tmp/other/"
+                                          :last-used (time-add (current-time) 100))))
+            (pi-mode--register-session s1)
+            (pi-mode--register-session s2)
+            (pi-mode--register-session sf)
+            (with-temp-buffer
+              (should (eq (pi-mode--resolve-session nil nil) s2))))
+        (pi-mode--unregister-session "*pi[f1]*")
+        (pi-mode--unregister-session "*pi[f2]*")
+        (pi-mode--unregister-session "*pi[ff]*")
+        (kill-buffer b1) (kill-buffer b2) (kill-buffer bf)
+        (delete-process p1) (delete-process p2) (delete-process pf)))))
+
+(ert-deftest pi-mode-test-resolve-intent-prompt ()
+  "INTENT prompt: ambiguous resolution prompts instead of MRU-guessing."
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+    (let ((b1 (get-buffer-create "*pi[ip1]*"))
+          (b2 (get-buffer-create "*pi[ip2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process)))
+      (unwind-protect
+          (let ((s1 (make-pi-mode-session :id "*pi[ip1]*" :buffer b1 :process p1
+                                          :project-root "/tmp/"
+                                          :last-used (current-time)))
+                (s2 (make-pi-mode-session :id "*pi[ip2]*" :buffer b2 :process p2
+                                          :project-root "/tmp/"
+                                          :last-used (time-add (current-time) 10))))
+            (pi-mode--register-session s1)
+            (pi-mode--register-session s2)
+            ;; two sessions, neither in-buffer nor visible: prompt (mock
+            ;; completing-read → s1, overriding the MRU s2)
+            (with-temp-buffer
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _) "*pi[ip1]*")))
+                (should (eq (pi-mode--resolve-session nil nil 'prompt) s1))))
+            ;; sole session: no prompt even with intent prompt
+            (pi-mode--unregister-session "*pi[ip2]*")
+            (with-temp-buffer
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _) (error "should not prompt"))))
+                (should (eq (pi-mode--resolve-session nil nil 'prompt) s1))))
+            ;; no-ask suppresses the intent prompt: MRU
+            (pi-mode--register-session s2)
+            (with-temp-buffer
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _) (error "should not prompt"))))
+                (should (eq (pi-mode--resolve-session nil t 'prompt) s2)))))
+        (pi-mode--unregister-session "*pi[ip1]*")
+        (pi-mode--unregister-session "*pi[ip2]*")
+        (kill-buffer b1) (kill-buffer b2)
+        (delete-process p1) (delete-process p2)))))
 
 
 (ert-deftest pi-mode-test-insert-text ()
@@ -437,7 +545,9 @@
            (pi-mode--register-session s)
            (with-temp-buffer
              (insert "line1\nline2")
-             (cl-letf (((symbol-function 'read-from-minibuffer)
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       ((symbol-function 'read-from-minibuffer)
                         (lambda (&rest _) (error "must not prompt"))))
                (pi-mode-send-region (point-min) (point-max))))
            (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
@@ -465,6 +575,8 @@
            (with-temp-buffer
              (cl-letf (((symbol-function 'buffer-file-name)
                         (lambda () "/tmp/proj/sub/a.ts"))
+                       ((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/proj"))
                        ((symbol-function 'read-from-minibuffer)
                         (lambda (&rest _) (error "must not prompt"))))
                (pi-mode-send-file)))
@@ -577,6 +689,73 @@
            (pi-mode--unregister-session "*pi[st]*"))
        (kill-buffer b)
        (ignore-errors (delete-process p))))))
+
+(ert-deftest pi-mode-test-session-stop-intent-prompt ()
+  "stop prompts between project sessions and stops the chosen one."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[sp1]*"))
+          (b2 (get-buffer-create "*pi[sp2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[sp1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/"
+                                    :last-used (current-time)))
+          (s2 (make-pi-mode-session :id "*pi[sp2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/"
+                                    :last-used (time-add (current-time) 10))))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/"))
+                     ((symbol-function 'completing-read)
+                      (lambda (&rest _) "*pi[sp1]*"))
+                     ((symbol-function 'y-or-n-p) (lambda (_) t)))
+             (with-temp-buffer
+               (pi-mode-session-stop)))
+           ;; the prompted-for s1 was stopped, not the MRU s2
+           (should-not (process-live-p p1))
+           (should (process-live-p p2)))
+       (pi-mode--unregister-session "*pi[sp1]*")
+       (pi-mode--unregister-session "*pi[sp2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (ignore-errors (delete-process p1))
+       (ignore-errors (delete-process p2))))))
+
+(ert-deftest pi-mode-test-session-rename-intent-prompt ()
+  "rename prompts between project sessions and renames the chosen one."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[rp1]*"))
+          (b2 (get-buffer-create "*pi[rp2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[rp1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/"
+                                    :last-used (current-time)))
+          (s2 (make-pi-mode-session :id "*pi[rp2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/"
+                                    :last-used (time-add (current-time) 10))))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/"))
+                     ((symbol-function 'completing-read)
+                      (lambda (&rest _) "*pi[rp1]*")))
+             (with-temp-buffer
+               (pi-mode-session-rename "refactor")))
+           ;; the prompted-for s1 was renamed, not the MRU s2
+           (should (equal (pi-mode-session-name s1) "refactor"))
+           (should-not (pi-mode-session-name s2))
+           (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
+             (should call)
+             (should (equal (car (cdr call)) "/name refactor"))))
+       (pi-mode--unregister-session "*pi[rp1]*")
+       (pi-mode--unregister-session "*pi[rp2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
 
 (ert-deftest pi-mode-test-menu-defined ()
   "The transient menu and its suffix commands exist."
@@ -1422,7 +1601,11 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
                        ((symbol-function 'ghostel-cursor-point)
                         (lambda () (+ (point-min) (length "──────\n"))))
                        ((symbol-function 'ghostel--viewport-row-at)
-                        (lambda (_pos) 1)))
+                        (lambda (_pos) 1))
+                       ;; the second call runs from the popup buffer,
+                       ;; where resolution is project-scoped
+                       ((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
                (pi-mode-edit-prompt)
                (pi-mode-edit-prompt)))
            (let ((popup (get-buffer "*pi prompt *pi[pe2]**")))

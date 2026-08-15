@@ -79,7 +79,7 @@ after its resolved cwd (on macOS `/var/...' is `/private/var/...')."
   "Rename the target session to NAME (sends /name to pi)."
   (interactive
    (list (read-from-minibuffer "Session name: ")))
-  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
     (when (and name (> (length name) 0))
       (with-current-buffer (pi-mode-session-buffer session)
         (ghostel-send-string (format "/name %s" name))
@@ -91,7 +91,7 @@ after its resolved cwd (on macOS `/var/...' is `/private/var/...')."
 (defun pi-mode-session-stop ()
   "Stop the target pi session."
   (interactive)
-  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
     (when (y-or-n-p (format "Stop pi session %s? " (pi-mode-session-id session)))
       (setf (pi-mode-session-exit-requested session) t)
       (delete-process (pi-mode-session-process session))
