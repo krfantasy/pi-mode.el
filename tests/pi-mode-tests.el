@@ -309,7 +309,7 @@
 
 (ert-deftest pi-mode-test-read-instance-name-rejects-brackets ()
   "Names with [, ], *, or control chars are rejected and re-prompted."
-  (let ((answers '("bad*name" "[nope]" "ok")))
+  (let ((answers '("bad*name" "[nope]" "\C-a" "ok")))
     (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (pop answers))))
       (should (equal (pi-mode--read-instance-name "/tmp/proj/") "ok"))
       (should-not answers))))
@@ -346,6 +346,23 @@
       (pi-mode--unregister-session "*pi[dupfor]*")
       (kill-buffer b)
       (delete-process p))))
+
+(ert-deftest pi-mode-test-read-instance-name-allows-name-of-dead-session ()
+  "A name used only by a DEAD session of the same project is allowed."
+  (let ((b (get-buffer-create "*pi[dupdead]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[dupdead]*" :buffer b :process p
+                                       :project-root "/tmp/proj/"
+                                       :name "refactor" :last-used (current-time))))
+          (pi-mode--register-session s)
+          (delete-process p)              ; s's process dies: no longer live
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (&rest _) "refactor")))
+            (should (equal (pi-mode--read-instance-name "/tmp/proj/") "refactor"))))
+      (pi-mode--unregister-session "*pi[dupdead]*")
+      (kill-buffer b)
+      (ignore-errors (delete-process p)))))
 
 (ert-deftest pi-mode-test-start-with-prefix-launches-named ()
   "C-u start prompts for an instance name and launches with it."
@@ -1096,6 +1113,27 @@ list so the action unwraps to a function list."
           ;; key matches — current key is ("none" . root), so no clash
           (should (equal (cdr (assoc '("none" . "/tmp/proj-a/") entries))
                          '(s2)))))
+    (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
+
+(ert-deftest pi-mode-test-hidden-panel-prunes-legacy-string-keys ()
+  "Legacy string-keyed entries are dropped without signalling."
+  (unwind-protect
+      (cl-letf (((symbol-function 'tab-bar-tabs)
+                 (lambda (&optional _frame)
+                   '((1 (name . "live-1")))))
+                ((symbol-function 'tab-bar--current-tab)
+                 (lambda () '((name . "none"))))
+                ((symbol-value 'tab-bar-mode) t))
+        (set-frame-parameter nil 'pi-mode-hidden-panel
+                             '(("old-tab" . (s-legacy))
+                               (("live-1" . "/tmp/proj-a/") . (s-old))))
+        ;; must not signal wrong-type-argument on (caar "old-tab")
+        (pi-mode--hidden-panel-set '(s1) "/tmp/proj-a/")
+        (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
+          (should-not (assoc "old-tab" entries)) ; legacy string key dropped
+          (should (assoc '("live-1" . "/tmp/proj-a/") entries))
+          (should (equal (cdr (assoc '("none" . "/tmp/proj-a/") entries))
+                         '(s1)))))
     (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
 
 (ert-deftest pi-mode-test-toggle-panel-roundtrip ()

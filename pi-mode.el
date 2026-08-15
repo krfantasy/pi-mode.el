@@ -799,7 +799,9 @@ ROOT defaults to the current project (`pi-mode--project-root')."
 ROOT defaults to the current project (`pi-mode--project-root').
 A nil SESSIONS drops the entry.  Entries for tabs that no longer
 exist are pruned on the way; pruning needs `tab-bar-mode', without
-which every buffer reports a synthetic tab and no real tabs exist."
+which every buffer reports a synthetic tab and no real tabs exist.
+Legacy string-keyed entries (from before the (tab . project)
+keying) never match a cons key and are dropped unconditionally."
   (let* ((root (or root (pi-mode--project-root)))
          (key (cons (pi-mode--current-tab-key) root))
          (live-tabs (and (bound-and-true-p tab-bar-mode)
@@ -808,6 +810,10 @@ which every buffer reports a synthetic tab and no real tabs exist."
                                  (tab-bar-tabs))))
          (rest (cl-remove-if (lambda (entry)
                                (or (equal (car entry) key)
+                                   ;; Legacy string-keyed entries never match
+                                   ;; a cons key; drop them and keep `caar'
+                                   ;; off strings (it would signal).
+                                   (not (consp (car entry)))
                                    (and live-tabs
                                         (not (member (caar entry) live-tabs)))))
                              (frame-parameter nil 'pi-mode-hidden-panel))))
