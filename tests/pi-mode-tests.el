@@ -318,6 +318,11 @@
             ;; in-buffer self wins for the foreign project too
             (with-current-buffer b3
               (should (eq (pi-mode--resolve-session nil) s3)))
+            ;; C-u always asks, even from inside a session buffer
+            (with-current-buffer b1
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _) "*pi[r2]*")))
+                (should (eq (pi-mode--resolve-session t) s2))))
             ;; C-u prompts (mock completing-read → s2)
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (&rest _) "*pi[r2]*")))
@@ -339,6 +344,7 @@
                                       :type 'user-error)))
               (should (string-match-p (regexp-quote "/tmp/") (cadr err)))))
         (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
+        (pi-mode--unregister-session "*pi[r3]*")
         (delete-process p1) (delete-process p2) (delete-process p3)))))
 
 (ert-deftest pi-mode-test-resolve-updates-mru ()
@@ -380,7 +386,9 @@
   "A live session in another project is never resolved from this one."
   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
     (let ((b (get-buffer-create "*pi[sf]*"))
-          (p (pi-mode-test--fake-process)))
+          (b2 (get-buffer-create "*pi[sl]*"))
+          (p (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process)))
       (unwind-protect
           (let ((s (make-pi-mode-session :id "*pi[sf]*" :buffer b :process p
                                          :project-root "/tmp/other/"
@@ -391,11 +399,21 @@
               (let ((err (should-error (pi-mode--resolve-session nil)
                                         :type 'user-error)))
                 (should (string-match-p (regexp-quote "/tmp/") (cadr err)))))
-            ;; in-buffer self still wins, whichever project it belongs to
+            ;; the empty-project check wins even inside the foreign buffer
             (with-current-buffer b
-              (should (eq (pi-mode--resolve-session nil) s))))
+              (should-error (pi-mode--resolve-session nil) :type 'user-error))
+            ;; once the current project has a session, the in-buffer
+            ;; branch targets this instance, whichever project it is in
+            (let ((s2 (make-pi-mode-session :id "*pi[sl]*" :buffer b2 :process p2
+                                            :project-root "/tmp/"
+                                            :last-used (current-time))))
+              (pi-mode--register-session s2)
+              (with-current-buffer b
+                (should (eq (pi-mode--resolve-session nil) s)))
+              (pi-mode--unregister-session "*pi[sl]*")))
         (pi-mode--unregister-session "*pi[sf]*")
-        (kill-buffer b) (delete-process p)))))
+        (kill-buffer b) (kill-buffer b2)
+        (delete-process p) (delete-process p2)))))
 
 (ert-deftest pi-mode-test-resolve-mru-ignores-foreign ()
   "The MRU branch picks the current project's MRU, never a foreign one."
@@ -525,7 +543,9 @@
      (unwind-protect
          (progn
            (pi-mode--register-session s)
-           (with-current-buffer b (pi-mode-interrupt))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/")))
+             (with-current-buffer b (pi-mode-interrupt)))
            (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
                           '("escape" nil))))
        (pi-mode--unregister-session "*pi[int]*")
@@ -654,8 +674,10 @@
      (unwind-protect
          (progn
            (pi-mode--register-session s)
-           (with-current-buffer b
-             (pi-mode-session-rename "refactor"))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/")))
+             (with-current-buffer b
+               (pi-mode-session-rename "refactor")))
            (should (equal (pi-mode-session-name s) "refactor"))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
@@ -674,7 +696,9 @@
          (progn
            (pi-mode--register-session s)
            (with-current-buffer b
-             (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       ((symbol-function 'y-or-n-p) (lambda (_) t)))
                (pi-mode-session-stop))
              (should (not (process-live-p p))))
            ;; second half: decline with a fresh live process
@@ -682,7 +706,9 @@
              (setf (pi-mode-session-process s) p2)
              (pi-mode--register-session s)
              (with-current-buffer b
-               (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) nil)))
+               (cl-letf (((symbol-function 'pi-mode--project-root)
+                          (lambda () "/tmp/"))
+                         ((symbol-function 'y-or-n-p) (lambda (_) nil)))
                  (pi-mode-session-stop))
                (should (process-live-p p2))
                (delete-process p2)))
@@ -1285,7 +1311,9 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
      (unwind-protect
          (progn
            (pi-mode--register-session s)
-           (with-current-buffer b (pi-mode-configure-model "gpt-5.1"))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/")))
+             (with-current-buffer b (pi-mode-configure-model "gpt-5.1")))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
              (should (equal (car (cdr call)) "/model gpt-5.1")))
@@ -1306,7 +1334,9 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
      (unwind-protect
          (progn
            (pi-mode--register-session s)
-           (with-current-buffer b (pi-mode-configure-thinking))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/")))
+             (with-current-buffer b (pi-mode-configure-thinking)))
            (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
                           '("tab" "shift"))))
        (pi-mode--unregister-session "*pi[ct]*")
@@ -1325,7 +1355,9 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
          (progn
            (pi-mode--register-session s)
            (with-current-buffer b
-             (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t))
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       ((symbol-function 'y-or-n-p) (lambda (_) t))
                        ((symbol-function 'delete-process) (lambda (&rest _) nil))
                        ((symbol-function 'pi-mode--launch-buffer)
                         (lambda (root args &optional _name)
@@ -1567,7 +1599,9 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
                        ((symbol-function 'ghostel-cursor-point)
                         (lambda () (+ (point-min) (length "scrollback\n──────\n"))))
                        ((symbol-function 'ghostel--viewport-row-at)
-                        (lambda (_pos) 2)))
+                        (lambda (_pos) 2))
+                       ((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
                (pi-mode-edit-prompt)))
            (let ((popup (get-buffer "*pi prompt *pi[pe]**")))
              (should popup)
