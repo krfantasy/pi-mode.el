@@ -312,11 +312,44 @@ launch fails the scratch buffer is removed."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(defun pi-mode--read-instance-name (&optional root)
+  "Read and validate an instance name for project ROOT.
+ROOT defaults to the current project (`pi-mode--project-root').
+Empty input returns nil (auto-named).  Pure-numeric names are
+rejected (reserved for auto-numbering), as are names containing
+`[', `]', `*', or control characters, and names already used by a
+live session of the same project; each rejection messages the reason
+and re-prompts.  Returns the trimmed name string or nil."
+  (let ((root (or root (pi-mode--project-root)))
+        name done)
+    (while (not done)
+      (setq name (string-trim
+                  (read-string "Instance name (empty for auto): ")))
+      (cond
+       ((string-empty-p name)
+        (setq name nil done t))
+       ((string-match-p "\\`[0-9]+\\'" name)
+        (message "Numeric names are reserved for auto-numbering")
+        (sit-for 1))
+       ((string-match-p "[][*[:cntrl:]]" name)
+        (message "Name cannot contain [, ], or *")
+        (sit-for 1))
+       ((cl-some (lambda (session)
+                   (equal name (pi-mode-session-name session)))
+                 (pi-mode--project-sessions root))
+        (message "Name already used in this project: %s" name)
+        (sit-for 1))
+       (t (setq done t))))
+    name))
+
 ;;;###autoload
 (defun pi-mode-start ()
-  "Start a pi session in the current project."
-  (interactive)
-  (pi-mode--launch-buffer (pi-mode--project-root) pi-mode-cli-args))
+  "Start a pi session in the current project.
+With a prefix argument, prompt for an instance name (empty for
+auto-naming) before starting."
+  (interactive "P")
+  (let ((name (and current-prefix-arg (pi-mode--read-instance-name))))
+    (pi-mode--launch-buffer (pi-mode--project-root) pi-mode-cli-args name)))
 
 ;;; Target resolution
 

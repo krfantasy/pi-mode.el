@@ -290,6 +290,127 @@
          (when (process-live-p (pi-mode-session-process session))
            (delete-process (pi-mode-session-process session))))))))
 
+(ert-deftest pi-mode-test-read-instance-name-empty ()
+  "Empty (or blank) input returns nil (auto-named)."
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "   ")))
+    (should-not (pi-mode--read-instance-name "/tmp/proj/"))))
+
+(ert-deftest pi-mode-test-read-instance-name-valid ()
+  "A valid name is trimmed and returned."
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "  refactor  ")))
+    (should (equal (pi-mode--read-instance-name "/tmp/proj/") "refactor"))))
+
+(ert-deftest pi-mode-test-read-instance-name-rejects-numeric ()
+  "Pure-numeric names are rejected (reserved) and re-prompted."
+  (let ((answers '("2" "refactor")))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (pop answers))))
+      (should (equal (pi-mode--read-instance-name "/tmp/proj/") "refactor"))
+      (should-not answers))))
+
+(ert-deftest pi-mode-test-read-instance-name-rejects-brackets ()
+  "Names with [, ], *, or control chars are rejected and re-prompted."
+  (let ((answers '("bad*name" "[nope]" "ok")))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (pop answers))))
+      (should (equal (pi-mode--read-instance-name "/tmp/proj/") "ok"))
+      (should-not answers))))
+
+(ert-deftest pi-mode-test-read-instance-name-rejects-duplicate ()
+  "Names already used by a live session of the same project are rejected."
+  (let ((b (get-buffer-create "*pi[dup]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[dup]*" :buffer b :process p
+                                       :project-root "/tmp/proj/"
+                                       :name "refactor" :last-used (current-time)))
+              (answers '("refactor" "other")))
+          (pi-mode--register-session s)
+          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (pop answers))))
+            (should (equal (pi-mode--read-instance-name "/tmp/proj/") "other"))
+            (should-not answers)))
+      (pi-mode--unregister-session "*pi[dup]*")
+      (kill-buffer b)
+      (delete-process p))))
+
+(ert-deftest pi-mode-test-read-instance-name-allows-same-name-other-project ()
+  "A name used by a live session in ANOTHER project is allowed."
+  (let ((b (get-buffer-create "*pi[dupfor]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[dupfor]*" :buffer b :process p
+                                       :project-root "/tmp/other/"
+                                       :name "refactor" :last-used (current-time))))
+          (pi-mode--register-session s)
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (&rest _) "refactor")))
+            (should (equal (pi-mode--read-instance-name "/tmp/proj/") "refactor"))))
+      (pi-mode--unregister-session "*pi[dupfor]*")
+      (kill-buffer b)
+      (delete-process p))))
+
+(ert-deftest pi-mode-test-start-with-prefix-launches-named ()
+  "C-u start prompts for an instance name and launches with it."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+             ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+             ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+             ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+             ((symbol-function 'pi-mode--read-instance-name)
+              (lambda (&optional _root) "refactor"))
+             (current-prefix-arg '(4)))
+     (let ((session (pi-mode-start)))
+       (unwind-protect
+           (progn
+             (should (equal (pi-mode-session-name session) "refactor"))
+             (should (equal (buffer-name (pi-mode-session-buffer session))
+                            "*pi[proj:refactor]*")))
+         (pi-mode--unregister-session (pi-mode-session-id session))
+         (when (buffer-live-p (pi-mode-session-buffer session))
+           (kill-buffer (pi-mode-session-buffer session)))
+         (when (process-live-p (pi-mode-session-process session))
+           (delete-process (pi-mode-session-process session))))))))
+
+(ert-deftest pi-mode-test-start-without-prefix-never-prompts ()
+  "Start without a prefix never prompts and launches unnamed."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+             ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+             ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+             ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+             ((symbol-function 'read-string)
+              (lambda (&rest _) (error "must not prompt without a prefix"))))
+     (let ((session (pi-mode-start)))
+       (unwind-protect
+           (progn
+             (should-not (pi-mode-session-name session))
+             (should (equal (buffer-name (pi-mode-session-buffer session))
+                            "*pi[proj]*")))
+         (pi-mode--unregister-session (pi-mode-session-id session))
+         (when (buffer-live-p (pi-mode-session-buffer session))
+           (kill-buffer (pi-mode-session-buffer session)))
+         (when (process-live-p (pi-mode-session-process session))
+           (delete-process (pi-mode-session-process session))))))))
+
+(ert-deftest pi-mode-test-start-with-prefix-empty-name-auto ()
+  "C-u start with empty input auto-names (nil name, plain buffer)."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+             ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+             ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+             ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+             ((symbol-function 'pi-mode--read-instance-name) (lambda (&optional _root) nil))
+             (current-prefix-arg '(4)))
+     (let ((session (pi-mode-start)))
+       (unwind-protect
+           (progn
+             (should-not (pi-mode-session-name session))
+             (should (equal (buffer-name (pi-mode-session-buffer session))
+                            "*pi[proj]*")))
+         (pi-mode--unregister-session (pi-mode-session-id session))
+         (when (buffer-live-p (pi-mode-session-buffer session))
+           (kill-buffer (pi-mode-session-buffer session)))
+         (when (process-live-p (pi-mode-session-process session))
+           (delete-process (pi-mode-session-process session))))))))
+
 (ert-deftest pi-mode-test-resolve-session-rules ()
   "Resolution: in-buffer self; sole; mru with echo; C-u prompts; no-ask."
   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
