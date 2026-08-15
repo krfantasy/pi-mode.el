@@ -755,23 +755,28 @@ state for users without tab-bar-mode."
            (alist-get 'name (tab-bar--current-tab)))
       "none"))
 
-(defun pi-mode--hidden-panel-get ()
-  "Hidden session set for the current tab, or nil."
-  (cdr (assoc (pi-mode--current-tab-key)
+(defun pi-mode--hidden-panel-get (&optional root)
+  "Hidden session set for the current tab and project, or nil.
+ROOT defaults to the current project (`pi-mode--project-root')."
+  (cdr (assoc (cons (pi-mode--current-tab-key) (or root (pi-mode--project-root)))
               (frame-parameter nil 'pi-mode-hidden-panel))))
 
-(defun pi-mode--hidden-panel-set (sessions)
-  "Remember SESSIONS as the current tab's hidden set.
+(defun pi-mode--hidden-panel-set (sessions &optional root)
+  "Remember SESSIONS as the current tab's hidden set for project ROOT.
+ROOT defaults to the current project (`pi-mode--project-root').
 A nil SESSIONS drops the entry.  Entries for tabs that no longer
-exist are pruned on the way."
-  (let* ((key (pi-mode--current-tab-key))
-         (live-tabs (and (fboundp 'tab-bar-tabs)
+exist are pruned on the way; pruning needs `tab-bar-mode', without
+which every buffer reports a synthetic tab and no real tabs exist."
+  (let* ((root (or root (pi-mode--project-root)))
+         (key (cons (pi-mode--current-tab-key) root))
+         (live-tabs (and (bound-and-true-p tab-bar-mode)
+                         (fboundp 'tab-bar-tabs)
                          (mapcar (lambda (tab) (alist-get 'name (cdr tab)))
                                  (tab-bar-tabs))))
          (rest (cl-remove-if (lambda (entry)
                                (or (equal (car entry) key)
                                    (and live-tabs
-                                        (not (member (car entry) live-tabs)))))
+                                        (not (member (caar entry) live-tabs)))))
                              (frame-parameter nil 'pi-mode-hidden-panel))))
     (set-frame-parameter nil 'pi-mode-hidden-panel
                          (if sessions

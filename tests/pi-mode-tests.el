@@ -902,35 +902,54 @@ list so the action unwraps to a function list."
   (should-error (pi-mode-toggle-panel) :type 'user-error))
 
 (ert-deftest pi-mode-test-hidden-panel-set-get ()
-  "Hidden sets are stored per current-tab key; nil drops the entry."
+  "Hidden sets are stored per (tab × project) key; nil drops the entry."
   (unwind-protect
       (progn
         (set-frame-parameter nil 'pi-mode-hidden-panel nil)
-        (should-not (pi-mode--hidden-panel-get))
-        (pi-mode--hidden-panel-set '(s1 s2))
-        (should (equal (pi-mode--hidden-panel-get) '(s1 s2)))
-        (pi-mode--hidden-panel-set nil)
-        (should-not (pi-mode--hidden-panel-get)))
+        (should-not (pi-mode--hidden-panel-get "/tmp/proj-a/"))
+        (pi-mode--hidden-panel-set '(s1 s2) "/tmp/proj-a/")
+        (should (equal (pi-mode--hidden-panel-get "/tmp/proj-a/") '(s1 s2)))
+        (should-not (pi-mode--hidden-panel-get "/tmp/proj-b/")) ; other project
+        (pi-mode--hidden-panel-set nil "/tmp/proj-a/")
+        (should-not (pi-mode--hidden-panel-get "/tmp/proj-a/")))
     (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
 
 (ert-deftest pi-mode-test-hidden-panel-tab-isolation ()
-  "Hidden sets are isolated per tab."
+  "Hidden sets are isolated per tab for the same project."
   (unwind-protect
       (progn
         (set-frame-parameter nil 'pi-mode-hidden-panel nil)
         (cl-letf (((symbol-function 'tab-bar--current-tab)
                    (lambda () '((name . "tab-a"))))
                   ((symbol-value 'tab-bar-mode) t))
-          (pi-mode--hidden-panel-set '(s1))
-          (should (equal (pi-mode--hidden-panel-get) '(s1))))
+          (pi-mode--hidden-panel-set '(s1) "/tmp/proj-a/")
+          (should (equal (pi-mode--hidden-panel-get "/tmp/proj-a/") '(s1))))
         (cl-letf (((symbol-function 'tab-bar--current-tab)
                    (lambda () '((name . "tab-b"))))
                   ((symbol-value 'tab-bar-mode) t))
-          (should-not (pi-mode--hidden-panel-get)))
+          (should-not (pi-mode--hidden-panel-get "/tmp/proj-a/")))
         (cl-letf (((symbol-function 'tab-bar--current-tab)
                    (lambda () '((name . "tab-a"))))
                   ((symbol-value 'tab-bar-mode) t))
-          (should (equal (pi-mode--hidden-panel-get) '(s1)))))
+          (should (equal (pi-mode--hidden-panel-get "/tmp/proj-a/") '(s1)))))
+    (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
+
+(ert-deftest pi-mode-test-hidden-panel-per-project ()
+  "Same tab: each project's hidden set is independent; nil drops only one."
+  (unwind-protect
+      (progn
+        (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+        (pi-mode--hidden-panel-set '(a1 a2) "/tmp/proj-a/")
+        (pi-mode--hidden-panel-set '(b1) "/tmp/proj-b/")
+        ;; each project sees its own set in the same tab
+        (should (equal (pi-mode--hidden-panel-get "/tmp/proj-b/") '(b1)))
+        (should (equal (pi-mode--hidden-panel-get "/tmp/proj-a/") '(a1 a2)))
+        ;; nil for B drops only B's entry; A's remains
+        (pi-mode--hidden-panel-set nil "/tmp/proj-b/")
+        (should-not (pi-mode--hidden-panel-get "/tmp/proj-b/"))
+        (should (equal (pi-mode--hidden-panel-get "/tmp/proj-a/") '(a1 a2)))
+        (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
+          (should (= (length entries) 1))))
     (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
 
 (ert-deftest pi-mode-test-hidden-panel-prunes-dead-tabs ()
@@ -939,17 +958,23 @@ list so the action unwraps to a function list."
       (cl-letf (((symbol-function 'tab-bar-tabs)
                  (lambda (&optional _frame)
                    ;; real tab-bar-tabs shape: (TAB-ID (name . NAME) ...)
-                   '((1 (name . "live-1")) (2 (name . "live-2"))))))
+                   '((1 (name . "live-1")) (2 (name . "live-2")))))
+                ((symbol-function 'tab-bar--current-tab)
+                 (lambda () '((name . "none"))))
+                ((symbol-value 'tab-bar-mode) t))
         (set-frame-parameter nil 'pi-mode-hidden-panel
-                             '(("dead-tab" . (s1)) ("live-1" . (s-old))))
-        (pi-mode--hidden-panel-set '(s2))
+                             '((("dead-tab" . "/tmp/proj-a/") . (s1))
+                               (("live-1" . "/tmp/proj-a/") . (s-old))))
+        (pi-mode--hidden-panel-set '(s2) "/tmp/proj-a/")
         (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
-          (should (assoc "none" entries))       ; current tab (batch fallback)
-          (should (assoc "live-1" entries))     ; still live
-          (should-not (assoc "dead-tab" entries)) ; pruned
-          ;; current-tab write also replaced the old "live-1" entry only if
-          ;; the current key equals it — batch key is "none", so no clash
-          (should (equal (cdr (assoc "none" entries)) '(s2)))))
+          ;; keys are (TAB . PROJECT) conses; the stubbed tab is "none"
+          (should (assoc '("none" . "/tmp/proj-a/") entries))
+          (should (assoc '("live-1" . "/tmp/proj-a/") entries)) ; still live
+          (should-not (assoc '("dead-tab" . "/tmp/proj-a/") entries)) ; pruned
+          ;; the current-tab write replaced any same-key entry only if the
+          ;; key matches — current key is ("none" . root), so no clash
+          (should (equal (cdr (assoc '("none" . "/tmp/proj-a/") entries))
+                         '(s2)))))
     (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
 
 (ert-deftest pi-mode-test-toggle-panel-roundtrip ()
@@ -1152,7 +1177,7 @@ current project's MRU; a foreign buffer is never displayed."
            (with-current-buffer b-mru (setq-local pi-mode--session s-mru))
            (with-current-buffer b-foreign (setq-local pi-mode--session s-foreign))
            (delete-process p-dead)                 ; s-dead dies while hidden
-           (pi-mode--hidden-panel-set (list s-dead s-foreign))
+           (pi-mode--hidden-panel-set (list s-dead s-foreign) "/tmp/proj-a/")
            (cl-letf (((symbol-function 'pi-mode--project-root)
                       (lambda () "/tmp/proj-a/")))
              (should (equal (pi-mode-toggle-panel) :shown))
@@ -1166,6 +1191,69 @@ current project's MRU; a foreign buffer is never displayed."
        (ignore-errors (delete-process p-dead))
        (ignore-errors (delete-process p-mru))
        (ignore-errors (delete-process p-foreign))))))
+
+(ert-deftest pi-mode-test-toggle-panel-per-project-hidden-sets ()
+  "Same tab: hiding A then B keeps both sets; each project restores its own."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b-a1 (get-buffer-create "*pi[ppA1]*"))
+          (b-a2 (get-buffer-create "*pi[ppA2]*"))
+          (b-b1 (get-buffer-create "*pi[ppB1]*"))
+          (p-a1 (pi-mode-test--fake-process))
+          (p-a2 (pi-mode-test--fake-process))
+          (p-b1 (pi-mode-test--fake-process))
+          (s-a1 (make-pi-mode-session :id "*pi[ppA1]*" :buffer b-a1 :process p-a1
+                                      :project-root "/tmp/proj-a/" :window-slot 0
+                                      ;; distinct timestamps: active-sessions sorts
+                                      ;; most-recent-first (s-a2)
+                                      :last-used (time-subtract (current-time) 10)))
+          (s-a2 (make-pi-mode-session :id "*pi[ppA2]*" :buffer b-a2 :process p-a2
+                                      :project-root "/tmp/proj-a/" :window-slot 1
+                                      :last-used (current-time)))
+          (s-b1 (make-pi-mode-session :id "*pi[ppB1]*" :buffer b-b1 :process p-b1
+                                      :project-root "/tmp/proj-b/" :window-slot 2
+                                      :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s-a1)
+           (pi-mode--register-session s-a2)
+           (pi-mode--register-session s-b1)
+           (with-current-buffer b-a1 (setq-local pi-mode--session s-a1))
+           (with-current-buffer b-a2 (setq-local pi-mode--session s-a2))
+           (with-current-buffer b-b1 (setq-local pi-mode--session s-b1))
+           (display-buffer b-a1)
+           (display-buffer b-a2)
+           (display-buffer b-b1)
+           ;; hide A's panel: A's two windows go, B's window stays
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-a/")))
+             (should (equal (pi-mode-toggle-panel) :hidden))
+             (should-not (get-buffer-window b-a1))
+             (should-not (get-buffer-window b-a2))
+             (should (get-buffer-window b-b1)))
+           ;; hide B's panel in the same tab: must not clobber A's set
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-b/")))
+             (should (equal (pi-mode-toggle-panel) :hidden))
+             (should-not (get-buffer-window b-b1)))
+           ;; B restores B's remembered set, not A's
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-b/")))
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b-b1))
+             (should-not (get-buffer-window b-a1)))
+           ;; A restores A's remembered set (s-a2 s-a1) — not merely B's MRU
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-a/")))
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b-a1))
+             (should (get-buffer-window b-a2))
+             (should (get-buffer-window b-b1))))
+       (pi-mode--unregister-session "*pi[ppA1]*")
+       (pi-mode--unregister-session "*pi[ppA2]*")
+       (pi-mode--unregister-session "*pi[ppB1]*")
+       (kill-buffer b-a1) (kill-buffer b-a2) (kill-buffer b-b1)
+       (delete-process p-a1) (delete-process p-a2) (delete-process p-b1)))))
 
 (ert-deftest pi-mode-test-toggle-panel-no-current-project-sessions ()
   "Toggle errors for a project with no live sessions, foreign ones
