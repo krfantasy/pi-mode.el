@@ -895,8 +895,8 @@ list so the action unwraps to a function list."
           (should-not (window-parameter window 'window-side)))
       (kill-buffer b))))
 
-(ert-deftest pi-mode-test-window-commands-no-error ()
-  "Window commands signal `user-error' when no sessions exist."
+(ert-deftest pi-mode-test-window-commands-no-sessions ()
+  "Window commands handle the no-sessions case by signaling `user-error'."
   (should-error (pi-mode-toggle-recent) :type 'user-error)
   (should-error (pi-mode-show-all) :type 'user-error)
   (should-error (pi-mode-toggle-panel) :type 'user-error))
@@ -1139,7 +1139,9 @@ current project's MRU; a foreign buffer is never displayed."
           (s-foreign (make-pi-mode-session :id "*pi[pfor]*" :buffer b-foreign
                                            :process p-foreign
                                            :project-root "/tmp/proj-b/" :window-slot 2
-                                           :last-used (time-subtract (current-time) 5)))
+                                           ;; newest session overall: a global-MRU
+                                           ;; restore fallback would pick it
+                                           :last-used (time-add (current-time) 5)))
           (window-sides-slots '(nil nil 4 nil)))
      (unwind-protect
          (progn

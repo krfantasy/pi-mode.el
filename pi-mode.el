@@ -791,7 +791,7 @@ project's most recently used session."
          (sessions (pi-mode--project-sessions root))
          (visible (pi-mode--visible-sessions sessions)))
     (unless sessions
-      (user-error "No running pi sessions in project %s" root))
+      (user-error "No running pi sessions in project %s; start one with `pi-mode-start'" root))
     (if visible
         (progn
           (pi-mode--hidden-panel-set visible)
