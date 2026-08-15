@@ -441,5 +441,74 @@ keeps the original prompt."
             (should-not (string-match-p "NOPE" (pi-mode-e2e--buffer-text buffer)))))
       (delete-directory project-root t))))
 
+(ert-deftest pi-mode-e2e-test-notifications-on-completion ()
+  "pi-mode notifications fire once per completed turn against real pi.
+The session JSONL is the only signal (pi records no agent_end event
+outside RPC mode).  Round 1 primes the file: the first observation sees
+a complete round and must stay silent (stale completion).  Round 2's
+completion is then detected through the incremental scan — exactly one
+notification, carrying the project name; an insert-only round adds
+none."
+  (pi-mode-e2e-server-start)
+  (let ((project-root (make-temp-file "pi-e2e-proj-" t))
+        (marker1 "e2e-notif-marker-1")
+        (marker2 "e2e-notif-marker-2"))
+    (unwind-protect
+        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+          (should (pi-mode-e2e--wait-ready process buffer project-root))
+          ;; Round 1: a full roundtrip while notifications are still off.
+          (with-temp-buffer
+            (insert marker1)
+            (pi-mode-send-region (point-min) (point-max)))
+          (should (pi-mode-e2e--wait-input process buffer marker1))
+          (with-current-buffer buffer
+            (ghostel-send-key "return"))
+          (should (pi-mode-e2e--wait-reply process buffer))
+          (should (pi-mode-e2e--wait-jsonl
+                   process agent-dir
+                   (lambda (content)
+                     (and (string-match-p marker1 content)
+                          (string-match-p "E2E-REPLY" content)))))
+          ;; Watch the live session now.
+          (let ((pi-mode-notifications t)
+                (pi-mode-notifications-when-visible t)
+                (delivered nil))
+            (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                       (lambda (session) (push session delivered))))
+              ;; First observation: round 1 is complete → the inference
+              ;; marks it handled; no stale notification.
+              (pi-mode-notifications--poll)
+              (should-not delivered)
+              ;; Round 2: the incremental scan processes the user message
+              ;; then the terminal stop in file order → one delivery.
+              (with-temp-buffer
+                (insert marker2)
+                (pi-mode-send-region (point-min) (point-max)))
+              (should (pi-mode-e2e--wait-input process buffer marker2))
+              (with-current-buffer buffer
+                (ghostel-send-key "return"))
+              (let ((deadline (+ (float-time) 40)))
+                (while (and (null delivered) (< (float-time) deadline))
+                  (pi-mode-notifications--poll)
+                  (accept-process-output process 0.2)
+                  (sleep-for 0.05)))
+              (should delivered)
+              (should (= 1 (length delivered)))
+              (should (eq (car delivered) session))
+              (let ((msg (pi-mode-notifications--message (car delivered))))
+                (should (string-match-p "pi finished:" msg))
+                (should (string-match-p "pi-e2e-proj" msg)))
+              ;; The repeating timer keeps polling without duplicating.
+              (sleep-for 2.5)
+              (should (= 1 (length delivered)))
+              ;; An insert-only round (nothing submitted) must not notify.
+              (with-temp-buffer
+                (insert "e2e-notif-marker-3")
+                (pi-mode-send-region (point-min) (point-max)))
+              (should (pi-mode-e2e--wait-input process buffer "e2e-notif-marker-3"))
+              (pi-mode-notifications--poll)
+              (should (= 1 (length delivered))))))
+      (delete-directory project-root t))))
+
 (provide 'pi-mode-e2e)
 ;;; pi-mode-e2e.el ends here

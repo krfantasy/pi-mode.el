@@ -18,6 +18,7 @@
 (require 'pi-mode)
 (require 'pi-mode-session)
 (require 'pi-mode-status)
+(require 'pi-mode-notifications)
 
 ;;;###autoload
 (transient-define-prefix pi-mode-menu ()
@@ -57,7 +58,10 @@ navigation b/w/W/a, interaction i/f/e, submenus C/d/S."
     ("m" "Model" pi-mode-configure-model)
     ("T" "Thinking" pi-mode-configure-thinking)
     ("u" "TUI mode" pi-mode-configure-tui-mode)
-    ("x" "CLI args" pi-mode-configure-cli-args)]])
+    ("x" "CLI args" pi-mode-configure-cli-args)
+    ("n" "Notifications" pi-mode-toggle-notifications
+     :description (lambda () (format "Notifications (%s)"
+                                     (if pi-mode-notifications "ON" "OFF"))))]])
 
 (transient-define-prefix pi-mode-debug-menu ()
   "pi-mode debugging menu."

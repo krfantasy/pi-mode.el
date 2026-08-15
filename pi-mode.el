@@ -941,6 +941,9 @@ call from your configuration."
 ;; `(require 'pi-mode)' resolves via `featurep' — a require before the
 ;; provide would re-enter pi-mode.el mid-load ("Recursive load").
 (require 'pi-mode-session)
+;; Same reasoning: pi-mode-notifications.el requires both pi-mode and
+;; pi-mode-session.
+(require 'pi-mode-notifications)
 ;; Same reasoning: pi-mode-menu.el requires both pi-mode and
 ;; pi-mode-session.
 (require 'pi-mode-menu)

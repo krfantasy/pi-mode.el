@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'json)            ; json-encode for the notification test fixtures
 (require 'project)          ; project-root is not autoloaded; the cl-letf
                             ; mock of project-current bypasses its autoload
 (require 'pi-mode)
@@ -596,7 +597,8 @@
                  pi-mode-prompt-edit-cancel
                  pi-mode-interrupt pi-mode-configure-model
                  pi-mode-configure-thinking pi-mode-configure-tui-mode
-                 pi-mode-configure-cli-args))
+                 pi-mode-configure-cli-args
+                 pi-mode-toggle-notifications))
     (should (commandp cmd))))
 
 (ert-deftest pi-mode-test-install-keybindings-shim ()
@@ -1364,6 +1366,304 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
     (should (= (buffer-size) 0))
     (pi-mode-prompt-edit-mode -1)
     (should-not header-line-format)))
+
+;;; Notifications tests
+
+(defun pi-mode-test--msg-entry (role &optional stop ts)
+  "A session-JSONL message entry plist (ROLE, STOP, TS)."
+  (let ((msg `((role . ,role)
+               ,@(and stop `((stopReason . ,stop)))
+               ,@(and ts `((timestamp . ,ts))))))
+    `((type . "message") (message . ,msg))))
+
+(defun pi-mode-test--write-jsonl (file entries &optional append)
+  "Write ENTRIES (plists) as JSON lines to FILE; append when APPEND."
+  (with-temp-buffer
+    (dolist (entry entries)
+      (insert (json-encode entry) "\n"))
+    (write-region (point-min) (point-max) file append)))
+
+(defun pi-mode-test--notif-session (name dir)
+  "Register a fake session whose session dir is DIR; return the session."
+  (let* ((id (format "*pi[%s]*" name))
+         (b (get-buffer-create id))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id id :buffer b :process p
+                                  :project-root "/tmp/notif-proj/")))
+    (pi-mode--register-session s)
+    s))
+
+(defun pi-mode-test--notif-teardown (session dir)
+  "Unregister SESSION, kill its fixtures and DIR, reset poll state."
+  (pi-mode--unregister-session (pi-mode-session-id session))
+  (when (buffer-live-p (pi-mode-session-buffer session))
+    (kill-buffer (pi-mode-session-buffer session)))
+  (ignore-errors (delete-process (pi-mode-session-process session)))
+  (delete-directory dir t)
+  (clrhash pi-mode-notifications--state))
+
+(ert-deftest pi-mode-test-notifications-completion ()
+  "A turn that completes while watched triggers one notification."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt1" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications t))
+           ;; First observation: only the header and the user message (the
+           ;; turn is still running) → pending, no notification.
+           (pi-mode-test--write-jsonl file
+             (list '((type . "session"))
+                   (pi-mode-test--msg-entry "user")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (session) (push session calls))))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; The turn completes: toolUse/toolResult interleave, then stop.
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "assistant" "toolUse")
+                     (pi-mode-test--msg-entry "toolResult")
+                     (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             (should (eq (car calls) session))
+             (should (equal (pi-mode-notifications--message session)
+                            "pi finished: notif-proj"))
+             ;; Pending cleared: nothing more to notify.
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-no-duplicate ()
+  "One notification per completed turn; a second turn notifies again."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt2" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications t))
+           (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (session) (push session calls))))
+             (pi-mode-notifications--poll)
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             ;; A second turn completes → a second notification.
+             (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")) t)
+             (pi-mode-notifications--poll)
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 2 (length calls)))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-first-scan-inference ()
+  "First observation infers pending: stale completions never notify."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt3" dir))
+          (calls nil))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications t))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_s) (push t calls))))
+             ;; A completed turn (user older than its terminal stop): stale.
+             (let ((file (expand-file-name "old.jsonl" dir)))
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "user" nil "2026-08-15T06:50:00.000Z")
+                       (pi-mode-test--msg-entry "assistant" "stop" "2026-08-15T06:51:00.000Z")))
+               (pi-mode-notifications--poll)
+               (should-not calls))
+             ;; A file holding only a completed assistant message: no user.
+             (let ((file (expand-file-name "only.jsonl" dir)))
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "assistant" "stop" "2026-08-15T07:00:00.000Z")))
+               (pi-mode-notifications--poll)
+               (should-not calls))
+             ;; A mid-turn file (user without terminal stop) stays pending,
+             ;; so the completion that follows does notify.
+             (let ((file (expand-file-name "mid.jsonl" dir)))
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "user" nil "2026-08-15T08:00:00.000Z")))
+               (pi-mode-notifications--poll)
+               (should-not calls)
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "assistant" "stop" "2026-08-15T08:01:00.000Z")) t)
+               (pi-mode-notifications--poll)
+               (should (= 1 (length calls))))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-aborted ()
+  "aborted assistant messages neither notify nor clear pending."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt4" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications t))
+           (pi-mode-test--write-jsonl file
+             (list (pi-mode-test--msg-entry "user")
+                   (pi-mode-test--msg-entry "assistant" "aborted")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_s) (push t calls))))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; Pending survives the abort: the next turn's terminal stop
+             ;; notifies exactly once.
+             (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")) t)
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-visibility ()
+  "Visible session buffers suppress delivery unless when-visible is set."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt5" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil)
+          (win (selected-window)))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications t))
+           (cl-letf (((symbol-function 'get-buffer-window)
+                      (lambda (&rest _) win))
+                     ((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_s) (push t calls))))
+             ;; Visible + when-visible nil: suppressed (and marked handled).
+             (let ((pi-mode-notifications-when-visible nil))
+               (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
+               (pi-mode-notifications--poll)
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+               (pi-mode-notifications--poll)
+               (should-not calls)
+               (pi-mode-notifications--poll)
+               (should-not calls))
+             ;; Visible + when-visible t: delivered.
+             (let ((pi-mode-notifications-when-visible t))
+               (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")) t)
+               (pi-mode-notifications--poll)
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+               (pi-mode-notifications--poll)
+               (should (= 1 (length calls))))
+             ;; Not visible + when-visible nil: delivered (default case).
+             (cl-letf (((symbol-function 'get-buffer-window)
+                        (lambda (&rest _) nil)))
+               (let ((pi-mode-notifications-when-visible nil))
+                 (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")) t)
+                 (pi-mode-notifications--poll)
+                 (pi-mode-test--write-jsonl file
+                   (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+                 (pi-mode-notifications--poll)
+                 (should (= 2 (length calls)))))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-rotation ()
+  "A shrunken file resets the scan state; growth is picked up again."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt6" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications t))
+           ;; A completed turn observed first: stale, not notified.
+           (pi-mode-test--write-jsonl file
+             (list (pi-mode-test--msg-entry "user" nil "2026-08-15T06:00:00.000Z")
+                   (pi-mode-test--msg-entry "assistant" "stop" "2026-08-15T06:01:00.000Z")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_s) (push t calls))))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; Offset advancement: only the new user message is scanned.
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "user" nil "2026-08-15T06:02:00.000Z")) t)
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; Rotation: the file shrank — the state resets to a fresh
+             ;; observation and the smaller complete turn stays stale.
+             (let ((old-size (file-attribute-size (file-attributes file))))
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "user" nil "2026-08-15T07:00:00.000Z")
+                       (pi-mode-test--msg-entry "assistant" "stop" "2026-08-15T07:01:00.000Z")))
+               (should (< (file-attribute-size (file-attributes file)) old-size)))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; The rotated session's next turn completes → notified.
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "user" nil "2026-08-15T08:00:00.000Z")) t)
+             (pi-mode-notifications--poll)
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "assistant" "stop" "2026-08-15T08:01:00.000Z")) t)
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-fallback-delivery ()
+  "Without alert, delivery is a message plus a ding; alert is not called."
+  (let ((session (make-pi-mode-session :id "*pi[nf]*" :project-root "/tmp/fall-proj/"))
+        (msgs nil) (dings 0) (alerts nil))
+    (cl-letf (((symbol-function 'require) (lambda (&rest _) nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) msgs)))
+              ((symbol-function 'ding) (lambda () (setq dings (1+ dings))))
+              ((symbol-function 'alert) (lambda (&rest _) (push t alerts))))
+      (pi-mode-notifications--deliver session)
+      (should (equal msgs '("pi finished: fall-proj")))
+      (should (= dings 1))
+      (should-not alerts))))
+
+(ert-deftest pi-mode-test-notifications-message ()
+  "The notification text carries the project and optional session name."
+  (let ((session (make-pi-mode-session :id "x" :project-root "/tmp/some-proj/")))
+    (should (equal (pi-mode-notifications--message session)
+                   "pi finished: some-proj")))
+  (let ((session (make-pi-mode-session :id "x" :project-root "/tmp/some-proj/"
+                                       :name "refactor")))
+    (should (equal (pi-mode-notifications--message session)
+                   "pi finished: some-proj (refactor)"))))
+
+(ert-deftest pi-mode-test-notifications-disabled-and-toggle ()
+  "The poll is a no-op while disabled; the toggle flips the option."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-" t))
+          (session (pi-mode-test--notif-session "nt8" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (let ((pi-mode-session-dir-function (lambda (_root) dir))
+               (pi-mode-notifications nil))
+           (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_s) (push t calls))))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; No detection state was recorded while disabled.
+             (should (= 0 (hash-table-count pi-mode-notifications--state)))
+             ;; The toggle flips the option.
+             (pi-mode-toggle-notifications)
+             (should pi-mode-notifications)
+             (pi-mode-toggle-notifications)
+             (should-not pi-mode-notifications)))
+       (pi-mode-test--notif-teardown session dir)))))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here

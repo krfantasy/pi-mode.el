@@ -28,8 +28,10 @@ The test seam for session fixtures."
 
 Matches pi's layout: `sessions/--<path>--/' where the absolute path has
 `/' replaced by `-' (the leading slash of an absolute root contributes
-no dash, e.g. `/Users/me/proj' -> `--Users-me-proj--')."
-  (let ((name (string-replace "/" "-" (directory-file-name root))))
+no dash, e.g. `/Users/me/proj' -> `--Users-me-proj--').  The root is
+resolved with `file-truename' first, because pi names the directory
+after its resolved cwd (on macOS `/var/...' is `/private/var/...')."
+  (let ((name (string-replace "/" "-" (file-truename (directory-file-name root)))))
     (when (string-prefix-p "-" name)
       (setq name (substring name 1)))
     (expand-file-name
