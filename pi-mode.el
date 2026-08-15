@@ -154,6 +154,16 @@ scrollback) after the process ends."
                      (time-less-p (pi-mode-session-last-used b)
                                   (pi-mode-session-last-used a))))))
 
+(defun pi-mode--project-sessions (&optional root)
+  "Return live sessions of project ROOT, most recently used first.
+ROOT defaults to the current project (`pi-mode--project-root');
+sessions are matched on their `project-root' slot with `equal'.
+Reuses the live filter and sort of `pi-mode--active-sessions'."
+  (let ((root (or root (pi-mode--project-root))))
+    (cl-remove-if-not
+     (lambda (s) (equal (pi-mode-session-project-root s) root))
+     (pi-mode--active-sessions))))
+
 (defun pi-mode--session-by-buffer (buffer)
   (when buffer
     (gethash (buffer-name buffer) pi-mode--sessions)))
@@ -761,33 +771,43 @@ exist are pruned on the way."
 ;;;###autoload
 (defun pi-mode-toggle-panel ()
   "Hide or restore the pi side windows in the current tab.
-When any pi session window is visible, hide them all and remember
-the set for this tab; otherwise restore the remembered set (skipping
-dead sessions), falling back to the most recently used session.
-With no live sessions, reports the panel as hidden (legacy
-contract, preserved for `pi-mode-test-window-commands-no-error')."
+Only sessions of the current project (`pi-mode--project-root') are
+considered.  When any of their windows is visible, hide them all and
+remember the set for this tab; otherwise restore the remembered set,
+skipping dead and foreign sessions, falling back to the current
+project's most recently used session."
   (interactive)
-  (let* ((sessions (pi-mode--active-sessions))
+  (let* ((root (pi-mode--project-root))
+         (sessions (pi-mode--project-sessions root))
          (visible (pi-mode--visible-sessions sessions)))
-    (if (null sessions)
-        (progn (message "pi panel hidden") :hidden)
-      (if visible
-          (progn
-            (pi-mode--hidden-panel-set visible)
-            (dolist (win (window-list))
-              (when (pi-mode--session-buffer-p (window-buffer win))
-                (ignore-errors (delete-window win))))
-            (message "pi panel hidden")
-            :hidden)
-        (let* ((hidden (pi-mode--hidden-panel-get))
-               (restore (or (cl-remove-if-not #'pi-mode--session-live-p hidden)
-                            (let ((sessions (pi-mode--active-sessions)))
-                              (and sessions (list (pi-mode--mru-session sessions)))))))
-          (pi-mode--hidden-panel-set nil)
-          (dolist (session restore)
-            (display-buffer (pi-mode-session-buffer session)))
-          (message "pi panel shown")
-          :shown)))))
+    (unless sessions
+      (user-error "No running pi sessions in project %s" root))
+    (if visible
+        (progn
+          (pi-mode--hidden-panel-set visible)
+          (dolist (win (window-list))
+            (let ((session (or (pi-mode--session-by-buffer
+                                (window-buffer win))
+                               (buffer-local-value 'pi-mode--session
+                                                   (window-buffer win)))))
+              (when (and session
+                         (equal (pi-mode-session-project-root session) root))
+                (ignore-errors (delete-window win)))))
+          (message "pi panel hidden")
+          :hidden)
+      (let* ((hidden (pi-mode--hidden-panel-get))
+             (restore (or (cl-remove-if-not
+                           (lambda (s)
+                             (and (pi-mode--session-live-p s)
+                                  (equal (pi-mode-session-project-root s)
+                                         root)))
+                           hidden)
+                          (list (pi-mode--mru-session sessions)))))
+        (pi-mode--hidden-panel-set nil)
+        (dolist (session restore)
+          (display-buffer (pi-mode-session-buffer session)))
+        (message "pi panel shown")
+        :shown))))
 
 (defun pi-mode--strip-new-tab-pi-windows (&rest _)
   "Remove cloned pi side windows from a freshly created tab.

@@ -691,10 +691,10 @@ list so the action unwraps to a function list."
       (kill-buffer b))))
 
 (ert-deftest pi-mode-test-window-commands-no-error ()
-  "Window commands handle the no-session case gracefully."
+  "Window commands signal `user-error' when no sessions exist."
   (should-error (pi-mode-toggle-recent) :type 'user-error)
   (should-error (pi-mode-show-all) :type 'user-error)
-  (should (equal (pi-mode-toggle-panel) :hidden)))
+  (should-error (pi-mode-toggle-panel) :type 'user-error))
 
 (ert-deftest pi-mode-test-hidden-panel-set-get ()
   "Hidden sets are stored per current-tab key; nil drops the entry."
@@ -750,77 +750,239 @@ list so the action unwraps to a function list."
 (ert-deftest pi-mode-test-toggle-panel-roundtrip ()
   "toggle-panel hides visible sessions and restores the same set."
   (pi-mode-test-with-mock-ghostel
-   (let* ((b1 (get-buffer-create "*pi[t1]*"))
-          (b2 (get-buffer-create "*pi[t2]*"))
-          (p1 (pi-mode-test--fake-process))
-          (p2 (pi-mode-test--fake-process))
-          (s1 (make-pi-mode-session :id "*pi[t1]*" :buffer b1 :process p1
-                                    :project-root "/tmp/" :window-slot 0
-                                    ;; distinct timestamps: active-sessions sorts
-                                    ;; most-recent-first (s2), keeping the
-                                    ;; expected set order deterministic
-                                    :last-used (time-subtract (current-time) 10)))
-          (s2 (make-pi-mode-session :id "*pi[t2]*" :buffer b2 :process p2
-                                    :project-root "/tmp/" :window-slot 1
-                                    :last-used (current-time)))
-          (window-sides-slots '(nil nil 4 nil)))
-     (unwind-protect
-         (progn
-           (pi-mode--register-session s1)
-           (pi-mode--register-session s2)
-           (with-current-buffer b1 (setq-local pi-mode--session s1))
-           (with-current-buffer b2 (setq-local pi-mode--session s2))
-           (display-buffer b1)
-           (display-buffer b2)
-           (should (get-buffer-window b1))
-           (should (get-buffer-window b2))
-           (should (equal (pi-mode-toggle-panel) :hidden))
-           (should-not (get-buffer-window b1))
-           (should-not (get-buffer-window b2))
-           (should (equal (pi-mode--hidden-panel-get) (list s2 s1)))
-           (should (equal (pi-mode-toggle-panel) :shown))
-           (should (get-buffer-window b1))
-           (should (get-buffer-window b2)))
-       (pi-mode--unregister-session "*pi[t1]*")
-       (pi-mode--unregister-session "*pi[t2]*")
-       (kill-buffer b1) (kill-buffer b2)
-       (delete-process p1) (delete-process p2)))))
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+     (let* ((b1 (get-buffer-create "*pi[t1]*"))
+            (b2 (get-buffer-create "*pi[t2]*"))
+            (p1 (pi-mode-test--fake-process))
+            (p2 (pi-mode-test--fake-process))
+            (s1 (make-pi-mode-session :id "*pi[t1]*" :buffer b1 :process p1
+                                      :project-root "/tmp/" :window-slot 0
+                                      ;; distinct timestamps: active-sessions sorts
+                                      ;; most-recent-first (s2), keeping the
+                                      ;; expected set order deterministic
+                                      :last-used (time-subtract (current-time) 10)))
+            (s2 (make-pi-mode-session :id "*pi[t2]*" :buffer b2 :process p2
+                                      :project-root "/tmp/" :window-slot 1
+                                      :last-used (current-time)))
+            (window-sides-slots '(nil nil 4 nil)))
+       (unwind-protect
+           (progn
+             (pi-mode--register-session s1)
+             (pi-mode--register-session s2)
+             (with-current-buffer b1 (setq-local pi-mode--session s1))
+             (with-current-buffer b2 (setq-local pi-mode--session s2))
+             (display-buffer b1)
+             (display-buffer b2)
+             (should (get-buffer-window b1))
+             (should (get-buffer-window b2))
+             (should (equal (pi-mode-toggle-panel) :hidden))
+             (should-not (get-buffer-window b1))
+             (should-not (get-buffer-window b2))
+             (should (equal (pi-mode--hidden-panel-get) (list s2 s1)))
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b1))
+             (should (get-buffer-window b2)))
+         (pi-mode--unregister-session "*pi[t1]*")
+         (pi-mode--unregister-session "*pi[t2]*")
+         (kill-buffer b1) (kill-buffer b2)
+         (delete-process p1) (delete-process p2))))))
 
 (ert-deftest pi-mode-test-toggle-panel-restore-skips-dead ()
   "Restore drops dead remembered sessions and falls back to the MRU live one."
   (pi-mode-test-with-mock-ghostel
-   (let* ((b1 (get-buffer-create "*pi[td1]*"))
-          (b2 (get-buffer-create "*pi[td2]*"))
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+     (let* ((b1 (get-buffer-create "*pi[td1]*"))
+            (b2 (get-buffer-create "*pi[td2]*"))
+            (p1 (pi-mode-test--fake-process))
+            (p2 (pi-mode-test--fake-process))
+            (s1 (make-pi-mode-session :id "*pi[td1]*" :buffer b1 :process p1
+                                      :project-root "/tmp/" :window-slot 0
+                                      :last-used (current-time)))
+            (s2 (make-pi-mode-session :id "*pi[td2]*" :buffer b2 :process p2
+                                      :project-root "/tmp/" :window-slot 1
+                                      :last-used (current-time)))
+            (window-sides-slots '(nil nil 4 nil)))
+       (unwind-protect
+           (progn
+             (pi-mode--register-session s1)
+             (pi-mode--register-session s2)
+             (with-current-buffer b1 (setq-local pi-mode--session s1))
+             (with-current-buffer b2 (setq-local pi-mode--session s2))
+             (display-buffer b1)
+             (pi-mode-toggle-panel)               ; hide s1, remembered set = (s1)
+             (delete-process p1)                  ; s1 dies while hidden
+             ;; the remembered set holds the now-dead s1: restore must skip it
+             ;; via the live-session filter and fall back to the MRU live
+             ;; session (s2)
+             (pi-mode--hidden-panel-set (list s1))
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b2))      ; s2 restored via MRU fallback
+             (should-not (get-buffer-window b1))) ; dead s1 skipped — no window
+         (pi-mode--unregister-session "*pi[td1]*")
+         (pi-mode--unregister-session "*pi[td2]*")
+         (kill-buffer b1) (kill-buffer b2)
+         (ignore-errors (delete-process p1))
+         (ignore-errors (delete-process p2)))))))
+
+(ert-deftest pi-mode-test-project-sessions-scope-and-order ()
+  "project-sessions returns the project's live sessions, MRU-first."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[ps1]*"))
+          (b2 (get-buffer-create "*pi[ps2]*"))
+          (b3 (get-buffer-create "*pi[ps3]*"))
           (p1 (pi-mode-test--fake-process))
           (p2 (pi-mode-test--fake-process))
-          (s1 (make-pi-mode-session :id "*pi[td1]*" :buffer b1 :process p1
-                                    :project-root "/tmp/" :window-slot 0
+          (p3 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[ps1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/ps-a/" :window-slot 0
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[ps2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/ps-a/" :window-slot 1
                                     :last-used (current-time)))
-          (s2 (make-pi-mode-session :id "*pi[td2]*" :buffer b2 :process p2
-                                    :project-root "/tmp/" :window-slot 1
+          (s3 (make-pi-mode-session :id "*pi[ps3]*" :buffer b3 :process p3
+                                    :project-root "/tmp/ps-b/" :window-slot 2
+                                    :last-used (current-time))))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (pi-mode--register-session s3)
+           (should (equal (pi-mode--project-sessions "/tmp/ps-a/")
+                          (list s2 s1)))
+           (should (equal (pi-mode--project-sessions "/tmp/ps-b/") (list s3)))
+           (should-not (pi-mode--project-sessions "/tmp/ps-c/"))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/ps-a/")))
+             (should (equal (pi-mode--project-sessions) (list s2 s1)))))
+       (pi-mode--unregister-session "*pi[ps1]*")
+       (pi-mode--unregister-session "*pi[ps2]*")
+       (pi-mode--unregister-session "*pi[ps3]*")
+       (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
+       (delete-process p1) (delete-process p2) (delete-process p3)))))
+
+(ert-deftest pi-mode-test-toggle-panel-hides-only-current-project ()
+  "Hiding scopes to the current project; foreign windows stay."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[pa1]*"))
+          (b2 (get-buffer-create "*pi[pa2]*"))
+          (bf (get-buffer-create "*pi[pb]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (pf (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[pa1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj-a/" :window-slot 0
+                                    ;; distinct timestamps: active-sessions sorts
+                                    ;; most-recent-first (s2), keeping the
+                                    ;; expected set order deterministic
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[pa2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj-a/" :window-slot 1
+                                    :last-used (current-time)))
+          (sf (make-pi-mode-session :id "*pi[pb]*" :buffer bf :process pf
+                                    :project-root "/tmp/proj-b/" :window-slot 2
                                     :last-used (current-time)))
           (window-sides-slots '(nil nil 4 nil)))
      (unwind-protect
          (progn
            (pi-mode--register-session s1)
            (pi-mode--register-session s2)
+           (pi-mode--register-session sf)
            (with-current-buffer b1 (setq-local pi-mode--session s1))
            (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (with-current-buffer bf (setq-local pi-mode--session sf))
            (display-buffer b1)
-           (pi-mode-toggle-panel)               ; hide s1, remembered set = (s1)
-           (delete-process p1)                  ; s1 dies while hidden
-           ;; the remembered set holds the now-dead s1: restore must skip it
-           ;; via the live-session filter and fall back to the MRU live
-           ;; session (s2)
-           (pi-mode--hidden-panel-set (list s1))
-           (should (equal (pi-mode-toggle-panel) :shown))
-           (should (get-buffer-window b2))      ; s2 restored via MRU fallback
-           (should-not (get-buffer-window b1))) ; dead s1 skipped — no window
-       (pi-mode--unregister-session "*pi[td1]*")
-       (pi-mode--unregister-session "*pi[td2]*")
-       (kill-buffer b1) (kill-buffer b2)
-       (ignore-errors (delete-process p1))
-       (ignore-errors (delete-process p2))))))
+           (display-buffer b2)
+           (display-buffer bf)
+           (should (get-buffer-window b1))
+           (should (get-buffer-window b2))
+           (should (get-buffer-window bf))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-a/")))
+             (should (equal (pi-mode-toggle-panel) :hidden))
+             (should-not (get-buffer-window b1))
+             (should-not (get-buffer-window b2))
+             (should (get-buffer-window bf))      ; foreign window untouched
+             (should (equal (pi-mode--hidden-panel-get) (list s2 s1)))
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b1))
+             (should (get-buffer-window b2))
+             (should (get-buffer-window bf))))
+       (pi-mode--unregister-session "*pi[pa1]*")
+       (pi-mode--unregister-session "*pi[pa2]*")
+       (pi-mode--unregister-session "*pi[pb]*")
+       (kill-buffer b1) (kill-buffer b2) (kill-buffer bf)
+       (delete-process p1) (delete-process p2) (delete-process pf)))))
+
+(ert-deftest pi-mode-test-toggle-panel-restore-scoped-fallback ()
+  "Restore with only dead/foreign remembered sessions falls back to the
+current project's MRU; a foreign buffer is never displayed."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b-dead (get-buffer-create "*pi[pdead]*"))
+          (b-mru (get-buffer-create "*pi[pmru]*"))
+          (b-foreign (get-buffer-create "*pi[pfor]*"))
+          (p-dead (pi-mode-test--fake-process))
+          (p-mru (pi-mode-test--fake-process))
+          (p-foreign (pi-mode-test--fake-process))
+          (s-dead (make-pi-mode-session :id "*pi[pdead]*" :buffer b-dead
+                                        :process p-dead
+                                        :project-root "/tmp/proj-a/" :window-slot 0
+                                        :last-used (current-time)))
+          (s-mru (make-pi-mode-session :id "*pi[pmru]*" :buffer b-mru
+                                       :process p-mru
+                                       :project-root "/tmp/proj-a/" :window-slot 1
+                                       :last-used (current-time)))
+          (s-foreign (make-pi-mode-session :id "*pi[pfor]*" :buffer b-foreign
+                                           :process p-foreign
+                                           :project-root "/tmp/proj-b/" :window-slot 2
+                                           :last-used (time-subtract (current-time) 5)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s-dead)
+           (pi-mode--register-session s-mru)
+           (pi-mode--register-session s-foreign)
+           (with-current-buffer b-dead (setq-local pi-mode--session s-dead))
+           (with-current-buffer b-mru (setq-local pi-mode--session s-mru))
+           (with-current-buffer b-foreign (setq-local pi-mode--session s-foreign))
+           (delete-process p-dead)                 ; s-dead dies while hidden
+           (pi-mode--hidden-panel-set (list s-dead s-foreign))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-a/")))
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b-mru))  ; project MRU restored
+             (should-not (get-buffer-window b-dead)) ; dead skipped
+             (should-not (get-buffer-window b-foreign)))) ; foreign never shown
+       (pi-mode--unregister-session "*pi[pdead]*")
+       (pi-mode--unregister-session "*pi[pmru]*")
+       (pi-mode--unregister-session "*pi[pfor]*")
+       (kill-buffer b-dead) (kill-buffer b-mru) (kill-buffer b-foreign)
+       (ignore-errors (delete-process p-dead))
+       (ignore-errors (delete-process p-mru))
+       (ignore-errors (delete-process p-foreign))))))
+
+(ert-deftest pi-mode-test-toggle-panel-no-current-project-sessions ()
+  "Toggle errors for a project with no live sessions, foreign ones
+notwithstanding; the foreign window stays."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pnop]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pnop]*" :buffer b :process p
+                                   :project-root "/tmp/proj-b/" :window-slot 0))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b (setq-local pi-mode--session s))
+           (display-buffer b)
+           (should (get-buffer-window b))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-a/")))
+             (let ((err (should-error (pi-mode-toggle-panel)
+                                       :type 'user-error)))
+               (should (string-match-p "proj-a" (cadr err))))
+             (should (get-buffer-window b))))     ; foreign window untouched
+       (pi-mode--unregister-session "*pi[pnop]*")
+       (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-strip-new-tab ()
   "New-tab stripping removes pi windows from the fresh tab."
