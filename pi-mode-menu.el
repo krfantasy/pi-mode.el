@@ -31,7 +31,7 @@ Mirrors cc-ide's \"Start new Claude Code instance (N running)\"."
 ;;;###autoload
 (transient-define-prefix pi-mode-menu ()
   "Command menu for pi-mode sessions.
-Key layout follows claude-code-ide.el: session s/c/r/q/Q/R/l,
+Key layout follows claude-code-ide.el: session s/c/r/F/R/q/Q/l,
 navigation b/w/W/a, interaction i/p/n/f/E/e, submenus C/d."
   [:description pi-mode--session-status
    :class transient-columns
