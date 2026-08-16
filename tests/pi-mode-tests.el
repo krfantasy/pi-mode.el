@@ -1187,6 +1187,120 @@ scrollback review; the session is still unregistered."
        (when (buffer-live-p b) (kill-buffer b))
        (ignore-errors (delete-process p))))))
 
+(ert-deftest pi-mode-test-session-stop-all-project-scoped ()
+  "stop-all stops the current project's sessions and leaves other projects alone."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[sa1]*"))
+          (b2 (get-buffer-create "*pi[sa2]*"))
+          (b3 (get-buffer-create "*pi[sa3]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (p3 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[sa1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/"
+                                    :last-used (current-time)))
+          (s2 (make-pi-mode-session :id "*pi[sa2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/"
+                                    :last-used (time-add (current-time) 10)))
+          (s3 (make-pi-mode-session :id "*pi[sa3]*" :buffer b3 :process p3
+                                    :project-root "/tmp/other/"
+                                    :last-used (time-add (current-time) 20)))
+          (prompts nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (pi-mode--register-session s3)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/"))
+                     ((symbol-function 'y-or-n-p)
+                      (lambda (prompt) (push prompt prompts) t)))
+             (pi-mode-session-stop-all))
+           ;; both of the current project's sessions stopped; the other
+           ;; project's session is untouched
+           (should-not (process-live-p p1))
+           (should-not (process-live-p p2))
+           (should (process-live-p p3))
+           (should (pi-mode-session-exit-requested s1))
+           (should (pi-mode-session-exit-requested s2))
+           (should-not (pi-mode-session-exit-requested s3))
+           ;; the confirmation names the project scope
+           (should (equal prompts
+                          '("Stop 2 pi session(s) in /tmp/? "))))
+       (dolist (b (list b1 b2 b3)) (kill-buffer b))
+       (dolist (p (list p1 p2 p3)) (ignore-errors (delete-process p)))))))
+
+(ert-deftest pi-mode-test-session-stop-all-all-projects ()
+  "stop-all with a prefix stops the sessions of every project."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[spa1]*"))
+          (b2 (get-buffer-create "*pi[spa2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[spa1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/"
+                                    :last-used (current-time)))
+          (s2 (make-pi-mode-session :id "*pi[spa2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/other/"
+                                    :last-used (time-add (current-time) 10)))
+          (prompts nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (should (equal (cadr (interactive-form 'pi-mode-session-stop-all))
+                          "P"))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/"))
+                     ((symbol-function 'y-or-n-p)
+                      (lambda (prompt) (push prompt prompts) t)))
+             (pi-mode-session-stop-all '(4)))
+           ;; both projects' sessions stopped
+           (should-not (process-live-p p1))
+           (should-not (process-live-p p2))
+           (should (pi-mode-session-exit-requested s1))
+           (should (pi-mode-session-exit-requested s2))
+           ;; the confirmation names the all-projects scope
+           (should (equal prompts '("Stop all 2 pi sessions? "))))
+       (dolist (b (list b1 b2)) (kill-buffer b))
+       (dolist (p (list p1 p2)) (ignore-errors (delete-process p)))))))
+
+(ert-deftest pi-mode-test-session-stop-all-declines ()
+  "stop-all with a declined confirmation stops nothing."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[sd]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[sd]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/"))
+                     ((symbol-function 'y-or-n-p) (lambda (_) nil)))
+             (pi-mode-session-stop-all))
+           (should (process-live-p p))
+           (should-not (pi-mode-session-exit-requested s)))
+       (kill-buffer b)
+       (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-stop-all-none ()
+  "stop-all with nothing to stop logs and neither prompts nor errors."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/"))
+             ((symbol-function 'y-or-n-p)
+              (lambda (&rest _) (error "must not prompt with no sessions"))))
+     (let ((pi-mode-debug t)
+           (log-buffer (get-buffer-create "*pi-mode-debug*")))
+       (unwind-protect
+           (progn
+             (with-current-buffer log-buffer (erase-buffer))
+             (pi-mode-session-stop-all)
+             (should (string-match-p
+                      "No pi sessions to stop"
+                      (with-current-buffer log-buffer (buffer-string)))))
+         (kill-buffer log-buffer))))))
+
 (ert-deftest pi-mode-test-session-rename-intent-prompt ()
   "rename prompts between project sessions and renames the chosen one."
   (pi-mode-test-with-mock-ghostel

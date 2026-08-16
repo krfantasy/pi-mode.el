@@ -133,19 +133,35 @@ deleted; the sentinel cleanup then removes the buffer per
     (pi-mode-log "stopped session %s" (pi-mode-session-id session))))
 
 ;;;###autoload
-(defun pi-mode-session-stop-all ()
-  "Stop all pi sessions in the current project."
-  (interactive)
+(defun pi-mode-session-stop-all (&optional all-projects)
+  "Stop every pi session in the current project.
+With prefix argument ALL-PROJECTS, stop the sessions of all projects."
+  (interactive "P")
   (let* ((root (pi-mode--project-root))
-         (sessions (cl-remove-if-not
-                    (lambda (s) (equal (pi-mode-session-project-root s) root))
-                    (pi-mode--active-sessions))))
-    (when (and sessions (y-or-n-p (format "Stop %d pi session(s) in %s? "
-                                          (length sessions) root)))
-      (dolist (s sessions)
-        (setf (pi-mode-session-exit-requested s) t)
-        (delete-process (pi-mode-session-process s)))
-      (pi-mode-log "stopped %d sessions" (length sessions)))))
+         (sessions (if all-projects
+                       (pi-mode--active-sessions)
+                     (pi-mode--project-sessions root))))
+    (if (null sessions)
+        (pi-mode-log "No pi sessions to stop")
+      (when (y-or-n-p (if all-projects
+                          (format "Stop all %d pi session%s? "
+                                  (length sessions)
+                                  (if (cdr sessions) "s" ""))
+                        (format "Stop %d pi session(s) in %s? "
+                                (length sessions) root)))
+        ;; One session's teardown error must not strand the rest
+        (dolist (s sessions)
+          (condition-case err
+              (progn
+                (setf (pi-mode-session-exit-requested s) t)
+                (delete-process (pi-mode-session-process s)))
+            (error
+             (pi-mode-log "Error stopping %s: %s"
+                          (pi-mode-session-id s)
+                          (error-message-string err)))))
+        (pi-mode-log "Stopped %d pi session%s"
+                     (length sessions)
+                     (if (cdr sessions) "s" ""))))))
 
 ;;;###autoload
 (defun pi-mode-list-sessions ()
