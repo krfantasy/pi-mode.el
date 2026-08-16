@@ -985,7 +985,8 @@ Regression: stale use-package :config blocks calling
   "Window defaults match claude-code-ide.el: right side, 20 lines, 100 columns."
   (should (eq pi-mode-window-side 'right))
   (should (= pi-mode-window-height 20))
-  (should (= pi-mode-window-width 100)))
+  (should (= pi-mode-window-width 100))
+  (should (eq pi-mode-focus-on-open t)))
 
 (ert-deftest pi-mode-test-display-args ()
   "display-args resolves side, slot, and size from customization."
@@ -1067,6 +1068,30 @@ list so the action unwraps to a function list."
             (should (window-dedicated-p window))
             (should (window-parameter window 'no-delete-other-windows))))
       (kill-buffer b))))
+
+(ert-deftest pi-mode-test-display-buffer-focus ()
+  "display-buffer selects the pi window when `pi-mode-focus-on-open' is
+non-nil and keeps the current window when it is nil."
+  (let ((b (get-buffer-create "*pi[focus]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (progn
+          (with-current-buffer b
+            (setq-local pi-mode--session (make-pi-mode-session :id "*pi[focus]*")))
+          ;; focus on (default): the pi window is selected
+          (let ((pi-mode-focus-on-open t))
+            (let ((win (display-buffer b)))
+              (should (windowp win))
+              (should (eq (selected-window) win))))
+          ;; focus off: the selected window before and after is unchanged
+          (let* ((pi-mode-focus-on-open nil)
+                 (before (frame-first-window)))
+            (select-window before)
+            (let ((win (display-buffer b)))
+              (should (windowp win))
+              (should (eq before (selected-window)))
+              (should-not (eq win (selected-window))))))
+      (kill-buffer b) (delete-process p))))
 
 (ert-deftest pi-mode-test-display-buffer-non-session-ignored ()
   "Non-session buffers are not affected by the pi-mode alist entry."
@@ -1640,6 +1665,29 @@ their side window (e2e pi-mode-e2e-test-window-side-and-panel)."
                                      (format "%S" (buffer-local-value
                                                    'mode-line-misc-info buffer)))))
          (kill-buffer buffer))))))
+
+(ert-deftest pi-mode-test-launch-focus-respects-option ()
+  "Launch selects the session window when `pi-mode-focus-on-open' is
+non-nil, and leaves focus alone when it is nil."
+  (pi-mode-test-with-mock-ghostel
+   ;; focus on (default): the session window is selected
+   (let ((session (pi-mode--launch-buffer "/tmp/focus-proj/" pi-mode-cli-args)))
+     (unwind-protect
+         (should (eq (window-buffer (selected-window))
+                     (pi-mode-session-buffer session)))
+       (kill-buffer (pi-mode-session-buffer session))))
+   ;; focus off: the session window exists but is not selected
+   (let* ((pi-mode-focus-on-open nil)
+          (before (selected-window))
+          (session (pi-mode--launch-buffer "/tmp/focus-proj/" pi-mode-cli-args))
+          (buffer (pi-mode-session-buffer session)))
+     (unwind-protect
+         (progn
+           (let ((win (get-buffer-window buffer)))
+             (should win)
+             (should-not (eq win (selected-window))))
+           (should (eq before (selected-window))))
+       (kill-buffer buffer)))))
 
 (ert-deftest pi-mode-test-session-buffer-p-registry-fallback ()
   "The predicate matches registered sessions even when the local was wiped."

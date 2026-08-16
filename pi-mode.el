@@ -303,7 +303,10 @@ launch fails the scratch buffer is removed."
           (setf (pi-mode-session-window-slot session) (pi-mode--assign-window-slot))
           (pi-mode--register-session session)
           (pi-mode--attach-sentinel process)
-          (pop-to-buffer buffer)
+          ;; display-buffer, not pop-to-buffer: window selection is
+          ;; governed by `pi-mode-focus-on-open' like every other
+          ;; display path (cc-ide parity, claude-code-ide.el:1487).
+          (display-buffer buffer)
           (run-hook-with-args 'pi-mode-after-start-hook session)
           session)
       ;; Launch failed before a process existed: leave no trace.
@@ -724,6 +727,15 @@ This sets the usable text area width, excluding fringes and margins."
   :type 'integer
   :group 'pi)
 
+(defcustom pi-mode-focus-on-open t
+  "Select the pi side window whenever a session is displayed.
+When non-nil, every display path (starting a session, restoring the
+panel with `w', showing all with `a', and toggling the recent session
+with `W') selects the pi window, moving focus to the session.  When
+nil those paths keep focus where it is."
+  :type 'boolean
+  :group 'pi)
+
 (defun pi-mode--display-args (buffer)
   "Return (SIDE SLOT SIZE-KEY SIZE-VALUE) for displaying BUFFER.
 SIDE is `pi-mode-window-side'; SLOT is the session's `window-slot'
@@ -761,7 +773,8 @@ top/bottom windows to exactly `pi-mode-window-height' text lines.
 The chosen window is dedicated to its session buffer and carries
 the `no-delete-other-windows' parameter, so `delete-other-windows'
 \(C-x 1) keeps it and unrelated `display-buffer' calls cannot reuse
-it."
+it.  When `pi-mode-focus-on-open' is non-nil the window is selected
+and focus moves to the session."
   (let* ((args (pi-mode--display-args buffer))
          (side (nth 0 args))
          (slot (nth 1 args))
@@ -784,7 +797,12 @@ it."
       ;; line; re-set the text height exactly (cc-ide parity,
       ;; claude-code-ide.el:991-995).
       (when (memq side '(top bottom))
-        (set-window-text-height window pi-mode-window-height)))
+        (set-window-text-height window pi-mode-window-height))
+      ;; Every display path funnels through this action function, so
+      ;; selecting here implements focus-on-open for all of them
+      ;; (cc-ide parity, claude-code-ide.el:987-989).
+      (when pi-mode-focus-on-open
+        (select-window window)))
     window))
 
 (defun pi-mode--assign-window-slot ()
