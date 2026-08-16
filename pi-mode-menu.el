@@ -20,6 +20,14 @@
 (require 'pi-mode-status)
 (require 'pi-mode-notifications)
 
+(defun pi-mode--start-description ()
+  "Dynamic description for the start command.
+Mirrors cc-ide's \"Start new Claude Code instance (N running)\"."
+  (let ((count (length (pi-mode--project-sessions))))
+    (if (> count 0)
+        (format "Start new pi session (%d running)" count)
+      "Start new pi session")))
+
 ;;;###autoload
 (transient-define-prefix pi-mode-menu ()
   "Command menu for pi-mode sessions.
@@ -28,7 +36,7 @@ navigation b/w/W/a, interaction i/p/n/f/E/e, submenus C/d."
   [:description pi-mode--session-status
    :class transient-columns
    ["Session"
-    ("s" "Start" pi-mode-start)
+    ("s" pi-mode-start :description pi-mode--start-description)
     ("c" "Continue" pi-mode-session-continue)
     ("r" "Resume" pi-mode-session-resume)
     ("F" "Fork" pi-mode-session-fork)

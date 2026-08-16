@@ -89,9 +89,10 @@
      (sessions
       (let* ((project-name (file-name-nondirectory (directory-file-name project-dir)))
              (shown (cl-subseq sessions 0 (min 4 (length sessions))))
-             (header (propertize (format "%s — %d session%s"
+             (header (propertize (format "%s — %d session%s (%d visible)"
                                          project-name (length sessions)
-                                         (if (cdr sessions) "s" ""))
+                                         (if (cdr sessions) "s" "")
+                                         (length (pi-mode--visible-sessions sessions)))
                                  'face 'success))
              (lines (mapcar
                      (lambda (s)

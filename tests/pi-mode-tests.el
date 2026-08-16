@@ -1524,6 +1524,44 @@ their children at index 2; suffixes are plists with :key and :command."
     (should (equal (cdr (assoc "p" suffixes)) 'pi-mode-send-prompt))
     (should (equal (cdr (assoc "n" suffixes)) 'pi-mode-insert-newline))))
 
+(ert-deftest pi-mode-test-start-description-count ()
+  "The start entry's description reports the project's running count."
+  (pi-mode-test-with-mock-ghostel
+   (should (equal (pi-mode--start-description) "Start new pi session"))
+   (let* ((b (get-buffer-create "*pi[sd1]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[sd1]*" :buffer b :process p
+                                   :project-root "/tmp/proj/"
+                                   :last-used (current-time))))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/")))
+             (should (equal (pi-mode--start-description)
+                            "Start new pi session (1 running)"))
+             (let ((b2 (get-buffer-create "*pi[sd2]*"))
+                   (p2 (pi-mode-test--fake-process)))
+               (unwind-protect
+                   (let ((s2 (make-pi-mode-session :id "*pi[sd2]*" :buffer b2
+                                                   :process p2
+                                                   :project-root "/tmp/proj/"
+                                                   :last-used (current-time))))
+                     (pi-mode--register-session s2)
+                     (should (equal (pi-mode--start-description)
+                                    "Start new pi session (2 running)")))
+                 (pi-mode--unregister-session "*pi[sd2]*")
+                 (kill-buffer b2)
+                 (delete-process p2)))))
+       (pi-mode--unregister-session "*pi[sd1]*")
+       (kill-buffer b)
+       (delete-process p)))))
+
+(ert-deftest pi-mode-test-menu-s-entry-description ()
+  "The main menu's s entry still targets pi-mode-start."
+  (should (equal (cdr (assoc "s" (pi-mode-test--menu-suffixes 'pi-mode-menu)))
+                 'pi-mode-start)))
+
 (ert-deftest pi-mode-test-menu-structure-reconciled-s-key ()
   "S reconciles with cc-ide: status/version live under Debug, the main
 menu has no Status submenu entry, and the config menu saves config."
@@ -2723,6 +2761,30 @@ non-nil, and leaves focus alone when it is nil."
                       (lambda () "/tmp/hs-proj/")))
              (should (string-match-p "No active sessions" (pi-mode--session-status)))))
        (pi-mode--unregister-session "*pi[hs]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-status-visible-count ()
+  "The header reports how many of the project's sessions are visible."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[hv]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[hv]*" :buffer b :process p
+                                   :project-root "/tmp/hv-proj/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/hv-proj/")))
+             ;; nothing displayed yet
+             (should (string-match-p "1 session (0 visible)"
+                                     (pi-mode--session-status)))
+             ;; displayed sessions count as visible
+             (let ((pi-mode-focus-on-open nil))
+               (display-buffer b))
+             (should (get-buffer-window b))
+             (should (string-match-p "1 session (1 visible)"
+                                     (pi-mode--session-status)))))
+       (pi-mode--unregister-session "*pi[hv]*")
        (kill-buffer b) (delete-process p)))))
 
 ;;; Prompt editing tests
