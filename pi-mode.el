@@ -774,7 +774,9 @@ The chosen window is dedicated to its session buffer and carries
 the `no-delete-other-windows' parameter, so `delete-other-windows'
 \(C-x 1) keeps it and unrelated `display-buffer' calls cannot reuse
 it.  When `pi-mode-focus-on-open' is non-nil the window is selected
-and focus moves to the session."
+and focus moves to the session.  Every display refreshes the
+session's MRU stamp, so a `w' restore makes the shown session the
+most-recently-used target."
   (let* ((args (pi-mode--display-args buffer))
          (side (nth 0 args))
          (slot (nth 1 args))
@@ -802,7 +804,12 @@ and focus moves to the session."
       ;; selecting here implements focus-on-open for all of them
       ;; (cc-ide parity, claude-code-ide.el:987-989).
       (when pi-mode-focus-on-open
-        (select-window window)))
+        (select-window window))
+      ;; Refresh MRU on every display: a restore path (`w', `a', `W')
+      ;; must make the shown session the most-recently-used target
+      ;; (cc-ide parity, claude-code-ide.el:979-985).
+      (when-let ((session (pi-mode--session-by-buffer buffer)))
+        (setf (pi-mode-session-last-used session) (current-time))))
     window))
 
 (defun pi-mode--assign-window-slot ()
@@ -962,7 +969,8 @@ most recently used one for target resolution."
   (let ((sessions (pi-mode--active-sessions)))
     (unless sessions (user-error "No running pi sessions"))
     (let ((session (pi-mode--mru-session sessions)))
-      (setf (pi-mode-session-last-used session) (current-time))
+      ;; last-used is refreshed by the display stamp in
+      ;; `pi-mode--display-buffer', like every other display path
       (display-buffer (pi-mode-session-buffer session)))))
 
 (defun pi-mode-show-debug ()

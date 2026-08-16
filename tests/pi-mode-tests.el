@@ -1093,6 +1093,29 @@ non-nil and keeps the current window when it is nil."
               (should-not (eq win (selected-window))))))
       (kill-buffer b) (delete-process p))))
 
+(ert-deftest pi-mode-test-display-stamps-mru ()
+  "Displaying a session buffer refreshes its MRU stamp.
+Regression: only window selection and explicit commands refreshed
+`last-used', so a `w' panel restore never made the shown session the
+most-recently-used target.  focus-on-open is bound nil so the
+window-selection hook cannot mask the display stamp under test."
+  (let* ((pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil) ; keep the kill-buffer guard inert in batch
+         (b (get-buffer-create "*pi[dmru]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[dmru]*" :buffer b :process p
+                                  :project-root "/tmp/"
+                                  :last-used (time-subtract (current-time) 5))))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (let ((before (time-subtract (current-time) 1)))
+            (display-buffer b)
+            (should (time-less-p before (pi-mode-session-last-used s)))))
+      (pi-mode--unregister-session "*pi[dmru]*")
+      (kill-buffer b) (delete-process p))))
+
 (ert-deftest pi-mode-test-display-buffer-non-session-ignored ()
   "Non-session buffers are not affected by the pi-mode alist entry."
   (let ((b (get-buffer-create "*plain*")))
@@ -1140,6 +1163,26 @@ non-nil and keeps the current window when it is nil."
   (should-error (pi-mode-toggle-recent) :type 'user-error)
   (should-error (pi-mode-show-all) :type 'user-error)
   (should-error (pi-mode-toggle-panel) :type 'user-error))
+
+(ert-deftest pi-mode-test-toggle-recent-stamps-mru ()
+  "toggle-recent refreshes the shown session's MRU stamp."
+  (let* ((pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil) ; keep the kill-buffer guard inert in batch
+         (b (get-buffer-create "*pi[trmru]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[trmru]*" :buffer b :process p
+                                  :project-root "/tmp/"
+                                  :last-used (time-subtract (current-time) 5))))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (let ((before (time-subtract (current-time) 1)))
+            (pi-mode-toggle-recent)
+            (should (get-buffer-window b))
+            (should (time-less-p before (pi-mode-session-last-used s)))))
+      (pi-mode--unregister-session "*pi[trmru]*")
+      (kill-buffer b) (delete-process p))))
 
 (ert-deftest pi-mode-test-hidden-panel-set-get ()
   "Hidden sets are stored per (tab × project) key; nil drops the entry."
@@ -1242,7 +1285,9 @@ non-nil and keeps the current window when it is nil."
   "toggle-panel hides visible sessions and restores the same set."
   (pi-mode-test-with-mock-ghostel
    (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
-     (let* ((b1 (get-buffer-create "*pi[t1]*"))
+     (let* ((pi-mode-focus-on-open nil) ; the selection hook must not mask
+                                        ; the display MRU stamp under test
+            (b1 (get-buffer-create "*pi[t1]*"))
             (b2 (get-buffer-create "*pi[t2]*"))
             (p1 (pi-mode-test--fake-process))
             (p2 (pi-mode-test--fake-process))
@@ -1270,9 +1315,17 @@ non-nil and keeps the current window when it is nil."
              (should-not (get-buffer-window b1))
              (should-not (get-buffer-window b2))
              (should (equal (pi-mode--hidden-panel-get) (list s2 s1)))
-             (should (equal (pi-mode-toggle-panel) :shown))
-             (should (get-buffer-window b1))
-             (should (get-buffer-window b2)))
+             ;; simulate stale MRU: nobody used these sessions recently
+             (setf (pi-mode-session-last-used s1) (time-subtract (current-time) 60)
+                   (pi-mode-session-last-used s2) (time-subtract (current-time) 60))
+             (let ((before (time-subtract (current-time) 1)))
+               (should (equal (pi-mode-toggle-panel) :shown))
+               (should (get-buffer-window b1))
+               (should (get-buffer-window b2))
+               ;; the restore path must refresh MRU on display, so the
+               ;; shown sessions become the target-resolution MRU
+               (should (time-less-p before (pi-mode-session-last-used s1)))
+               (should (time-less-p before (pi-mode-session-last-used s2)))))
          (pi-mode--unregister-session "*pi[t1]*")
          (pi-mode--unregister-session "*pi[t2]*")
          (kill-buffer b1) (kill-buffer b2)
