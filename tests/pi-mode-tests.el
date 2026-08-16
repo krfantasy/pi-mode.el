@@ -342,6 +342,32 @@
          (when (process-live-p (pi-mode-session-process session))
            (delete-process (pi-mode-session-process session))))))))
 
+(ert-deftest pi-mode-test-start-interactive-invocation ()
+  "pi-mode-start tolerates the prefix arg its `(interactive \"P\")' spec yields.
+`call-interactively' and transient apply the evaluated spec value (nil or
+the prefix) as an argument; an empty lambda list would signal
+wrong-number-of-arguments."
+  (pi-mode-test-with-mock-ghostel
+   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+             ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+             ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+             ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+             ((symbol-function 'read-string) (lambda (&rest _) "")))
+     (let ((sessions (list
+                      (call-interactively #'pi-mode-start)
+                      (apply #'pi-mode-start (list nil))
+                      (let ((current-prefix-arg '(4)))
+                        (call-interactively #'pi-mode-start)))))
+       (unwind-protect
+           (dolist (session sessions)
+             (should (pi-mode-session-process session)))
+         (dolist (session sessions)
+           (pi-mode--unregister-session (pi-mode-session-id session))
+           (when (buffer-live-p (pi-mode-session-buffer session))
+             (kill-buffer (pi-mode-session-buffer session)))
+           (when (process-live-p (pi-mode-session-process session))
+             (delete-process (pi-mode-session-process session)))))))))
+
 (ert-deftest pi-mode-test-read-instance-name-empty ()
   "Empty (or blank) input returns nil (auto-named)."
   (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "   ")))

@@ -366,11 +366,14 @@ auto-named.  Matches cc-ide's trigger in `claude-code-ide--start-session'."
     (pi-mode--read-instance-name root)))
 
 ;;;###autoload
-(defun pi-mode-start ()
+(defun pi-mode-start (&optional _prefix-arg)
   "Start a pi session in the current project.
 Prompts for an instance name (empty for auto-naming) when the project
 already has running sessions; a prefix argument prompts even for the
-first instance."
+first instance.
+The optional PREFIX-ARG is unused: it exists so the value produced by the
+`(interactive \"P\")' spec can be passed by `call-interactively' and
+transient without a wrong-number-of-arguments error."
   (interactive "P")
   (let ((root (pi-mode--project-root)))
     (pi-mode--launch-buffer root pi-mode-cli-args
