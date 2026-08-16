@@ -1095,6 +1095,14 @@ most recently used one for target resolution."
   (setq pi-mode-debug (not pi-mode-debug))
   (message "pi-mode debug %s" (if pi-mode-debug "on" "off")))
 
+(defun pi-mode--clear-debug-log ()
+  "Clear the *pi-mode-debug* buffer."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*pi-mode-debug*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)))
+  (message "pi-mode debug log cleared"))
+
 ;;;###autoload
 (defun pi-mode-install-keybindings (&optional _force)
   "Compatibility shim for the removed pi-side keybinding installer.

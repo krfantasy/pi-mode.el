@@ -1524,6 +1524,51 @@ their children at index 2; suffixes are plists with :key and :command."
     (should (equal (cdr (assoc "p" suffixes)) 'pi-mode-send-prompt))
     (should (equal (cdr (assoc "n" suffixes)) 'pi-mode-insert-newline))))
 
+(ert-deftest pi-mode-test-menu-structure-reconciled-s-key ()
+  "S reconciles with cc-ide: status/version live under Debug, the main
+menu has no Status submenu entry, and the config menu saves config."
+  (let ((main (pi-mode-test--menu-suffixes 'pi-mode-menu))
+        (debug (pi-mode-test--menu-suffixes 'pi-mode-debug-menu))
+        (config (pi-mode-test--menu-suffixes 'pi-mode-config-menu)))
+    ;; Status submenu leaves the main menu
+    (should-not (assoc "S" main))
+    ;; status/version under Debug, plus the existing debug entries
+    (should (equal (cdr (assoc "S" debug)) 'pi-mode-check-status))
+    (should (equal (cdr (assoc "v" debug)) 'pi-mode-show-version-info))
+    (should (equal (cdr (assoc "c" debug)) 'pi-mode--clear-debug-log))
+    (should (equal (cdr (assoc "d" debug)) 'pi-mode-toggle-debug))
+    (should (equal (cdr (assoc "l" debug)) 'pi-mode-show-debug))
+    ;; config menu saves configuration
+    (should (equal (cdr (assoc "S" config)) 'pi-mode--save-config))
+    ;; the standalone status submenu command stays public
+    (should (commandp 'pi-mode-status-menu))))
+
+(ert-deftest pi-mode-test-save-config ()
+  "pi-mode--save-config persists every config-menu-backed defcustom."
+  (let (calls)
+    (cl-letf (((symbol-function 'customize-save-variable)
+               (lambda (var val) (push (cons var val) calls))))
+      (pi-mode--save-config)
+      (should (= (length calls) 6))
+      (dolist (var '(pi-mode-window-side pi-mode-window-width
+                     pi-mode-window-height pi-mode-focus-on-open
+                     pi-mode-notifications pi-mode-cli-args))
+        (let ((call (assq var calls)))
+          (should call)
+          (should (equal (cdr call) (symbol-value var))))))))
+
+(ert-deftest pi-mode-test-clear-debug-log ()
+  "pi-mode--clear-debug-log empties the debug buffer."
+  (let ((pi-mode-debug t))
+    (with-current-buffer (get-buffer-create "*pi-mode-debug*")
+      (erase-buffer))
+    (pi-mode-log "noise %d" 1)
+    (with-current-buffer "*pi-mode-debug*"
+      (should (> (buffer-size) 0)))
+    (pi-mode--clear-debug-log)
+    (with-current-buffer "*pi-mode-debug*"
+      (should (= (buffer-size) 0)))))
+
 (ert-deftest pi-mode-test-install-keybindings-shim ()
   "The removed keybinding installer is an obsolete no-op compat shim.
 Regression: stale use-package :config blocks calling
