@@ -14,7 +14,6 @@
 
 ;;; Code:
 
-(require 'cl-lib)
 (require 'pi-mode)
 
 (defcustom pi-mode-session-dir-function #'pi-mode--session-dir
