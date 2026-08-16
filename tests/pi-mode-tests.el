@@ -227,6 +227,42 @@
       (kill-buffer b) (delete-process p)
       (pi-mode--unregister-session "*pi[sentinel]*"))))
 
+(ert-deftest pi-mode-test-sentinel-reports-abnormal-exit-code ()
+  "An abnormal exit reports \"pi exited with error code N\"."
+  (let ((b (get-buffer-create "*pi[errcode]*"))
+        (p (pi-mode-test--fake-process))
+        (messages nil))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[errcode]*" :buffer b :process p
+                                       :project-root "/tmp/")))
+          (pi-mode--register-session s)
+          (pi-mode--attach-sentinel p)
+          (cl-letf (((symbol-function 'message)
+                     (lambda (fmt &rest args)
+                       (push (apply #'format fmt args) messages))))
+            (funcall (process-sentinel p) p "exited abnormally with code 3\n")
+            (should (equal messages '("pi exited with error code 3"))))
+          ;; cleanup still runs for abnormal exits: unregistered and the
+          ;; buffer killed (kill-buffer-on-exit default t).
+          (should-not (pi-mode--session-by-buffer b))
+          (should-not (buffer-live-p b)))
+      (kill-buffer b) (delete-process p)
+      (pi-mode--unregister-session "*pi[errcode]*"))))
+
+(ert-deftest pi-mode-test-sentinel-normal-exit-no-error-message ()
+  "A normal finish produces no error-code message."
+  (let ((p (pi-mode-test--fake-process))
+        (messages nil))
+    (unwind-protect
+        (progn
+          (pi-mode--attach-sentinel p)
+          (cl-letf (((symbol-function 'message)
+                     (lambda (fmt &rest args)
+                       (push (apply #'format fmt args) messages))))
+            (funcall (process-sentinel p) p "finished\n")
+            (should-not messages)))
+      (delete-process p))))
+
 (ert-deftest pi-mode-test-exit-kills-buffer-default ()
   "The default matches claude-code-ide.el: exit kills the session buffer.
 `pi-mode-kill-buffer-on-exit' defaults to t; nil keeps the buffer."

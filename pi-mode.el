@@ -219,8 +219,8 @@ Returns the lifecycle process.  Sets ghostel buffer options that
 
 (defun pi-mode--attach-sentinel (process)
   "Chain pi-mode cleanup onto PROCESS's sentinel.
-Runs the stashed ghostel sentinel first, then `pi-mode--cleanup-session'
-on exit events."
+Runs the stashed ghostel sentinel first, reports abnormal exit codes,
+then `pi-mode--cleanup-session' on exit events."
   (let ((orig (process-sentinel process)))
     (process-put process 'pi-mode--ghostel-sentinel orig)
     (set-process-sentinel
@@ -228,6 +228,8 @@ on exit events."
      (lambda (proc event)
        (when (functionp (process-get proc 'pi-mode--ghostel-sentinel))
          (funcall (process-get proc 'pi-mode--ghostel-sentinel) proc event))
+       (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+         (message "pi exited with error code %s" (match-string 1 event)))
        (when (string-match-p "finished\\|exited\\|killed\\|terminated\\|deleted\\|closed" event)
          (pi-mode--cleanup-session proc event))))))
 
