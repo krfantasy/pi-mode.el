@@ -300,7 +300,8 @@ launch fails the scratch buffer is removed."
           ;; mode-line segment keep working.
           (with-current-buffer buffer
             (pi-mode--setup-session-buffer session))
-          (setf (pi-mode-session-window-slot session) (pi-mode--assign-window-slot))
+          (setf (pi-mode-session-window-slot session)
+                (pi-mode--assign-window-slot project-root))
           (pi-mode--register-session session)
           (pi-mode--attach-sentinel process)
           ;; display-buffer, not pop-to-buffer: window selection is
@@ -812,15 +813,50 @@ most-recently-used target."
         (setf (pi-mode-session-last-used session) (current-time))))
     window))
 
-(defun pi-mode--assign-window-slot ()
-  "Return the smallest side-window slot not used by a live session."
-  (let ((used (cl-loop for s in (pi-mode--active-sessions)
-                       for slot = (pi-mode-session-window-slot s)
-                       when slot collect slot))
-        (slot 0))
-    (while (memq slot used)
-      (cl-incf slot))
-    slot))
+(defconst pi-mode--window-slot-block 16
+  "Side-window slots reserved per project.
+Slots order windows along a frame side; reserving a contiguous block
+per project keeps one project's instances grouped together instead of
+interleaved by global creation order (cc-ide parity,
+claude-code-ide.el:846-893).")
+
+(defun pi-mode--assign-window-slot (root)
+  "Return a side-window slot for a new session of project ROOT.
+Each project owns a block of `pi-mode--window-slot-block' slots, so
+its windows sort together rather than by creation order.  Within the
+block the smallest slot not used by any live session is picked (the
+global check also keeps legacy out-of-block slots collision-free);
+when the block is exhausted the slot overflows into a fresh block
+that no live session occupies."
+  (let* ((block pi-mode--window-slot-block)
+         (siblings (cl-remove-if-not #'pi-mode-session-window-slot
+                                     (pi-mode--project-sessions root)))
+         (all-slots (cl-remove nil
+                               (mapcar #'pi-mode-session-window-slot
+                                       (pi-mode--active-sessions)))))
+    (cl-flet ((free-block-base ()
+                (let ((used-bases (mapcar (lambda (slot) (floor slot block))
+                                          all-slots))
+                      (b 0))
+                  (while (memq b used-bases)
+                    (cl-incf b))
+                  (* block b))))
+      (let* ((base (if siblings
+                       ;; Join the project's existing block
+                       (* block (floor (pi-mode-session-window-slot
+                                        (car siblings))
+                                       block))
+                     ;; New project: smallest block no live session occupies
+                     (free-block-base)))
+             (slot base))
+        (while (and (< slot (+ base block))
+                    (memq slot all-slots))
+          (cl-incf slot))
+        ;; Block exhausted: overflow into a fresh block rather than
+        ;; spilling into a neighboring project's block
+        (when (>= slot (+ base block))
+          (setq slot (free-block-base)))
+        slot))))
 
 ;; Pi buffers dock in a side window; the action function reads the
 ;; window customization at display time, so changing the defcustoms

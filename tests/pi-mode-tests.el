@@ -968,16 +968,127 @@ Regression: stale use-package :config blocks calling
         (p2 (pi-mode-test--fake-process)))
     (unwind-protect
         (progn
-          (should (= (pi-mode--assign-window-slot) 0))
+          (should (= (pi-mode--assign-window-slot "/tmp/") 0))
           (let ((s1 (make-pi-mode-session :id "*pi[w1]*" :buffer b1 :process p1
                                           :project-root "/tmp/" :window-slot 0))
                 (s2 (make-pi-mode-session :id "*pi[w2]*" :buffer b2 :process p2
                                           :project-root "/tmp/" :window-slot 1)))
             (pi-mode--register-session s1)
             (pi-mode--register-session s2)
-            (should (= (pi-mode--assign-window-slot) 2))
+            (should (= (pi-mode--assign-window-slot "/tmp/") 2))
             (pi-mode--unregister-session "*pi[w2]*")
-            (should (= (pi-mode--assign-window-slot) 1))))
+            (should (= (pi-mode--assign-window-slot "/tmp/") 1))))
+      (kill-buffer b1) (kill-buffer b2)
+      (delete-process p1) (delete-process p2))))
+
+(ert-deftest pi-mode-test-assign-window-slot-project-blocks ()
+  "Each project owns a slot block; a new project starts a fresh block."
+  (let* ((b1 (get-buffer-create "*pi[blkA1]*"))
+        (b2 (get-buffer-create "*pi[blkA2]*"))
+        (b3 (get-buffer-create "*pi[blkA3]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process))
+        (p3 (pi-mode-test--fake-process))
+        (s1 (make-pi-mode-session :id "*pi[blkA1]*" :buffer b1 :process p1
+                                  :project-root "/tmp/proj-a/" :window-slot 0))
+        (s2 (make-pi-mode-session :id "*pi[blkA2]*" :buffer b2 :process p2
+                                  :project-root "/tmp/proj-a/" :window-slot 1))
+        (s3 (make-pi-mode-session :id "*pi[blkA3]*" :buffer b3 :process p3
+                                  :project-root "/tmp/proj-a/" :window-slot 2)))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s1)
+          (pi-mode--register-session s2)
+          (pi-mode--register-session s3)
+          ;; A joins its existing block; B starts a fresh block
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 3))
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-b/") 16)))
+      (pi-mode--unregister-session "*pi[blkA1]*")
+      (pi-mode--unregister-session "*pi[blkA2]*")
+      (pi-mode--unregister-session "*pi[blkA3]*")
+      (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
+      (delete-process p1) (delete-process p2) (delete-process p3))))
+
+(ert-deftest pi-mode-test-assign-window-slot-block-overflow ()
+  "A full block overflows into a fresh block, skipping a neighbor's."
+  (let* ((buffers (cl-loop for i from 0 below 16
+                           collect (get-buffer-create (format "*pi[ovf%d]*" i))))
+         (ps (cl-loop for i from 0 below 16
+                      collect (pi-mode-test--fake-process)))
+         (sessions (cl-loop for i from 0 below 16
+                            for b in buffers
+                            for p in ps
+                            collect (make-pi-mode-session
+                                     :id (buffer-name b) :buffer b :process p
+                                     :project-root "/tmp/proj-a/" :window-slot i)))
+         (b17 (get-buffer-create "*pi[ovf17]*"))
+         (p17 (pi-mode-test--fake-process))
+         (s17 (make-pi-mode-session :id "*pi[ovf17]*" :buffer b17 :process p17
+                                    :project-root "/tmp/proj-b/" :window-slot 16)))
+    (unwind-protect
+        (progn
+          (dolist (s sessions) (pi-mode--register-session s))
+          ;; A's block (0..15) is full: the 17th A session overflows to
+          ;; the next block no live session occupies (16)
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 16))
+          ;; B occupies slot 16: the overflow skips B's block and lands
+          ;; on the next free one (32)
+          (pi-mode--register-session s17)
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 32)))
+      (dolist (s sessions) (pi-mode--unregister-session (pi-mode-session-id s)))
+      (pi-mode--unregister-session "*pi[ovf17]*")
+      (dolist (b buffers) (kill-buffer b))
+      (kill-buffer b17)
+      (dolist (p ps) (delete-process p))
+      (delete-process p17))))
+
+(ert-deftest pi-mode-test-assign-window-slot-frees-after-death ()
+  "Slots of dead sessions are released back to the project's block."
+  (let* ((b1 (get-buffer-create "*pi[die1]*"))
+        (b2 (get-buffer-create "*pi[die2]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process))
+        (s1 (make-pi-mode-session :id "*pi[die1]*" :buffer b1 :process p1
+                                  :project-root "/tmp/" :window-slot 0))
+        (s2 (make-pi-mode-session :id "*pi[die2]*" :buffer b2 :process p2
+                                  :project-root "/tmp/" :window-slot 1)))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s1)
+          (pi-mode--register-session s2)
+          (should (= (pi-mode--assign-window-slot "/tmp/") 2))
+          ;; both sessions die: the live filter drops them and their
+          ;; slots are free again
+          (delete-process p1)
+          (delete-process p2)
+          (should (= (pi-mode--assign-window-slot "/tmp/") 0)))
+      (pi-mode--unregister-session "*pi[die1]*")
+      (pi-mode--unregister-session "*pi[die2]*")
+      (kill-buffer b1) (kill-buffer b2)
+      (ignore-errors (delete-process p1))
+      (ignore-errors (delete-process p2)))))
+
+(ert-deftest pi-mode-test-assign-window-slot-legacy-out-of-block ()
+  "Out-of-block legacy slots never collide; new projects skip their block."
+  (let* ((b1 (get-buffer-create "*pi[leg1]*"))
+        (b2 (get-buffer-create "*pi[leg2]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process))
+        (s1 (make-pi-mode-session :id "*pi[leg1]*" :buffer b1 :process p1
+                                  :project-root "/tmp/proj-a/" :window-slot 0))
+        (s2 (make-pi-mode-session :id "*pi[leg2]*" :buffer b2 :process p2
+                                  :project-root "/tmp/legacy/" :window-slot 40)))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s1)
+          (pi-mode--register-session s2)
+          ;; A stays in its own block, never colliding with slot 40
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 1))
+          ;; C gets the smallest block no live session occupies: blocks
+          ;; 0 (A) and 2 (slot 40) are taken, block 1 (16) is free
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-c/") 16)))
+      (pi-mode--unregister-session "*pi[leg1]*")
+      (pi-mode--unregister-session "*pi[leg2]*")
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))
 
