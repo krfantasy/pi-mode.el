@@ -48,16 +48,8 @@
 (require 'pi-mode)
 (require 'pi-mode-session)
 
-(defvar pi-mode-notifications--timer nil
-  "The repeating poll timer, or nil.")
-
 (defvar pi-mode-notifications--state (make-hash-table :test #'equal)
   "Per-file detection state: FILE -> (OFFSET . PENDING).")
-
-;; The interval is defvar'd before `pi-mode-notifications--arm' (which
-;; reads it) and re-declared as a defcustom below, whose :set re-arms
-;; the timer so Customize changes take effect immediately.
-(defvar pi-mode-notifications-interval 2.0)
 
 (defcustom pi-mode-notifications nil
   "When non-nil, notify when a pi session finishes answering a turn.
@@ -74,25 +66,12 @@ When nil, a session whose buffer is visible in a window is skipped
   :type 'boolean
   :group 'pi)
 
-(defun pi-mode-notifications--arm ()
-  "Schedule the poll timer at `pi-mode-notifications-interval'."
-  (when pi-mode-notifications--timer
-    (cancel-timer pi-mode-notifications--timer))
-  (setq pi-mode-notifications--timer
-        (run-at-time pi-mode-notifications-interval
-                     pi-mode-notifications-interval
-                     #'pi-mode-notifications--poll)))
-
-;; The defcustom comes after `pi-mode-notifications--arm' (which it
-;; calls): `defcustom' runs its `:set' at load time via
-;; `custom-initialize-reset', so the function must already exist.
 (defcustom pi-mode-notifications-interval 2.0
-  "Seconds between polls of the live sessions' JSONL files."
+  "Seconds between polls of the live sessions' JSONL files.
+Read afresh at every poll, so Customize changes take effect on the
+next tick without re-arming."
   :type 'number
-  :group 'pi
-  :set (lambda (sym val)
-         (set-default sym val)
-         (pi-mode-notifications--arm)))
+  :group 'pi)
 
 (defun pi-mode-notifications--message (session)
   "Notification text for SESSION's completed turn."
@@ -251,8 +230,8 @@ completions and resumed sessions behave correctly."
 (defun pi-mode-notifications--prune ()
   "Drop detection state for files outside live sessions' dirs."
   (let ((dirs (mapcar (lambda (s)
-                        (funcall pi-mode-session-dir-function
-                                 (pi-mode-session-project-root s)))
+                        (pi-mode--session-dir
+                         (pi-mode-session-project-root s)))
                       (pi-mode--active-sessions))))
     (maphash (lambda (file _state)
                (unless (cl-loop for dir in dirs
@@ -263,18 +242,25 @@ completions and resumed sessions behave correctly."
 (defun pi-mode-notifications--poll ()
   "Check live sessions' JSONL for completed turns; notify when found.
 A no-op while `pi-mode-notifications' is nil; sessions launched
-outside pi-mode are not watched (no session struct to associate)."
+outside pi-mode are not watched (no session struct to associate).
+Reschedules itself one-shot at `pi-mode-notifications-interval', so
+the chain survives while notifications are disabled and Customize
+changes to the interval take effect on the next tick."
   (when pi-mode-notifications
     (let ((sessions (pi-mode--active-sessions)))
       (when sessions
         (dolist (session sessions)
           (pi-mode-notifications--scan-dir
-           (funcall pi-mode-session-dir-function
-                    (pi-mode-session-project-root session))
+           (pi-mode--session-dir (pi-mode-session-project-root session))
            session)))
-      (pi-mode-notifications--prune))))
+      (pi-mode-notifications--prune)))
+  (run-at-time pi-mode-notifications-interval nil
+               #'pi-mode-notifications--poll))
 
-(pi-mode-notifications--arm)
+;; One-shot start of the poll chain; `pi-mode-notifications--poll'
+;; reschedules itself each tick.
+(run-at-time pi-mode-notifications-interval nil
+             #'pi-mode-notifications--poll)
 
 (provide 'pi-mode-notifications)
 

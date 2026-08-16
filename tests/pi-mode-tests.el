@@ -87,14 +87,6 @@
                (lambda () (list 'vc 'Git "/tmp/proj-root/"))))
       (should (equal (pi-mode--project-root) "/tmp/proj-root/")))))
 
-(ert-deftest pi-mode-test-unique-buffer-name ()
-  (let ((buf (get-buffer-create "*pi[proj]*")))
-    (unwind-protect
-        (progn
-          (should (equal (pi-mode--unique-buffer-name "*pi[proj]*") "*pi[proj]*<2>"))
-          (should (equal (pi-mode--unique-buffer-name "*pi[other]*") "*pi[other]*")))
-      (kill-buffer buf))))
-
 (ert-deftest pi-mode-test-session-buffer-p ()
   "The predicate matches session buffers by buffer-local var, any name."
   (let ((b (get-buffer-create "*pi[pred]*")))
@@ -198,7 +190,7 @@
           (should (= (length (pi-mode--active-sessions)) 2))
           (should (eq (pi-mode--session-by-buffer b1) s1))
           (should (eq (pi-mode--session-by-process p2) s2))
-          (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+          (should (eq (car (pi-mode--active-sessions)) s2))
           (pi-mode--unregister-session "*pi[a]*")
           (should (= (length (pi-mode--active-sessions)) 1))
           (pi-mode--unregister-session "*pi[b]*")
@@ -599,16 +591,16 @@
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (&rest _) "*pi[m2]*")))
               (should (eq (pi-mode--resolve-session t) s2)))
-            (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+            (should (eq (car (pi-mode--active-sessions)) s2))
             ;; resolving s1 again makes it MRU again
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (&rest _) "*pi[m1]*")))
               (should (eq (pi-mode--resolve-session t) s1)))
-            (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s1))
+            (should (eq (car (pi-mode--active-sessions)) s1))
             ;; in-buffer branch also updates
             (with-current-buffer b2
               (should (eq (pi-mode--resolve-session nil) s2)))
-            (should (eq (pi-mode--mru-session (pi-mode--active-sessions)) s2))
+            (should (eq (car (pi-mode--active-sessions)) s2))
             (pi-mode--unregister-session "*pi[m1]*")
             (pi-mode--unregister-session "*pi[m2]*"))
         (kill-buffer b1) (kill-buffer b2)
@@ -1144,7 +1136,8 @@
           (write-region "" nil (expand-file-name "a.jsonl" dir))
           (write-region "" nil (expand-file-name "b.jsonl" dir))
           (write-region "" nil (expand-file-name "ignore.txt" dir))
-          (let ((pi-mode-session-dir-function (lambda (_root) dir)))
+          (cl-letf (((symbol-function 'pi-mode--session-dir)
+                     (lambda (_root) dir)))
             (should (= (length (pi-mode--session-files "/tmp/x")) 2))))
       (delete-directory dir t))))
 
@@ -1921,7 +1914,7 @@ Regression: stale use-package :config blocks calling
       (delete-process p1) (delete-process p2) (delete-process p3))))
 
 (ert-deftest pi-mode-test-assign-window-slot-block-overflow ()
-  "A full block overflows into a fresh block, skipping a neighbor's."
+  "A full block falls back to a slot past every live one."
   (let* ((buffers (cl-loop for i from 0 below 16
                            collect (get-buffer-create (format "*pi[ovf%d]*" i))))
          (ps (cl-loop for i from 0 below 16
@@ -1931,27 +1924,16 @@ Regression: stale use-package :config blocks calling
                             for p in ps
                             collect (make-pi-mode-session
                                      :id (buffer-name b) :buffer b :process p
-                                     :project-root "/tmp/proj-a/" :window-slot i)))
-         (b17 (get-buffer-create "*pi[ovf17]*"))
-         (p17 (pi-mode-test--fake-process))
-         (s17 (make-pi-mode-session :id "*pi[ovf17]*" :buffer b17 :process p17
-                                    :project-root "/tmp/proj-b/" :window-slot 16)))
+                                     :project-root "/tmp/proj-a/" :window-slot i))))
     (unwind-protect
         (progn
           (dolist (s sessions) (pi-mode--register-session s))
-          ;; A's block (0..15) is full: the 17th A session overflows to
-          ;; the next block no live session occupies (16)
-          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 16))
-          ;; B occupies slot 16: the overflow skips B's block and lands
-          ;; on the next free one (32)
-          (pi-mode--register-session s17)
-          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 32)))
+          ;; A's block (0..15) is full: the next A session lands past
+          ;; every live slot (16) instead of colliding with a neighbor.
+          (should (= (pi-mode--assign-window-slot "/tmp/proj-a/") 16)))
       (dolist (s sessions) (pi-mode--unregister-session (pi-mode-session-id s)))
-      (pi-mode--unregister-session "*pi[ovf17]*")
       (dolist (b buffers) (kill-buffer b))
-      (kill-buffer b17)
-      (dolist (p ps) (delete-process p))
-      (delete-process p17))))
+      (dolist (p ps) (delete-process p)))))
 
 (ert-deftest pi-mode-test-assign-window-slot-frees-after-death ()
   "Slots of dead sessions are released back to the project's block."
@@ -3129,8 +3111,8 @@ non-nil, and leaves focus alone when it is nil."
        (pi-mode--unregister-session "*pi[tu]*")
        (kill-buffer b) (delete-process p)))))
 
-(ert-deftest pi-mode-test-cli-version-found ()
-  "pi-mode--cli-version runs pi --version and caches the result."
+(ert-deftest pi-mode-test-cli-info-found ()
+  "pi-mode--cli-info runs pi --version and caches the result."
   (cl-letf (((symbol-function 'executable-find)
              (lambda (cmd) (when (equal cmd "pi") "/usr/bin/pi")))
             ((symbol-function 'call-process)
@@ -3141,14 +3123,14 @@ non-nil, and leaves focus alone when it is nil."
                      (insert "0.84.1\n")))
                  0))))
     (let ((pi-mode--cli-cache nil))
-      (should (equal (pi-mode--cli-version) "0.84.1"))
+      (should (equal (cdr (pi-mode--cli-info)) "0.84.1"))
       (should (equal pi-mode--cli-cache '("/usr/bin/pi" . "0.84.1"))))))
 
-(ert-deftest pi-mode-test-cli-version-missing ()
-  "pi-mode--cli-version is nil when the CLI is absent."
+(ert-deftest pi-mode-test-cli-info-missing ()
+  "pi-mode--cli-info is nil when the CLI is absent."
   (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
     (let ((pi-mode--cli-cache nil))
-      (should-not (pi-mode--cli-version))
+      (should-not (pi-mode--cli-info))
       (should-not pi-mode--cli-cache))))
 
 (ert-deftest pi-mode-test-cli-status-strings ()
@@ -3571,8 +3553,9 @@ non-nil, and leaves focus alone when it is nil."
           (file (expand-file-name "s.jsonl" dir))
           (calls nil))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications t))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
            ;; First observation: only the header and the user message (the
            ;; turn is still running) → pending, no notification.
            (pi-mode-test--write-jsonl file
@@ -3605,8 +3588,9 @@ non-nil, and leaves focus alone when it is nil."
           (file (expand-file-name "s.jsonl" dir))
           (calls nil))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications t))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
            (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
            (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
                       (lambda (session) (push session calls))))
@@ -3633,8 +3617,9 @@ non-nil, and leaves focus alone when it is nil."
           (session (pi-mode-test--notif-session "nt3" dir))
           (calls nil))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications t))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
            (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
                       (lambda (_s) (push t calls))))
              ;; A completed turn (user older than its terminal stop): stale.
@@ -3671,8 +3656,9 @@ non-nil, and leaves focus alone when it is nil."
           (file (expand-file-name "s.jsonl" dir))
           (calls nil))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications t))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
            (pi-mode-test--write-jsonl file
              (list (pi-mode-test--msg-entry "user")
                    (pi-mode-test--msg-entry "assistant" "aborted")))
@@ -3700,8 +3686,9 @@ non-nil, and leaves focus alone when it is nil."
           (calls nil)
           (win (selected-window)))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications t))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
            (cl-letf (((symbol-function 'get-buffer-window)
                       (lambda (&rest _) win))
                      ((symbol-function 'pi-mode-notifications--deliver)
@@ -3744,8 +3731,9 @@ non-nil, and leaves focus alone when it is nil."
           (file (expand-file-name "s.jsonl" dir))
           (calls nil))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications t))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
            ;; A completed turn observed first: stale, not notified.
            (pi-mode-test--write-jsonl file
              (list (pi-mode-test--msg-entry "user" nil "2026-08-15T06:00:00.000Z")
@@ -3810,8 +3798,9 @@ non-nil, and leaves focus alone when it is nil."
           (file (expand-file-name "s.jsonl" dir))
           (calls nil))
      (unwind-protect
-         (let ((pi-mode-session-dir-function (lambda (_root) dir))
-               (pi-mode-notifications nil))
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications nil))
            (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
            (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
                       (lambda (_s) (push t calls))))

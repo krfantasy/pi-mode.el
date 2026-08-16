@@ -21,30 +21,24 @@
 (defvar pi-mode--cli-cache nil
   "Cached (PATH . VERSION) for the pi CLI, or nil when unknown.")
 
-(defun pi-mode--cli-path ()
-  "Absolute path of the pi CLI via `executable-find', or nil."
-  (or (car pi-mode--cli-cache) (executable-find "pi")))
-
-(defun pi-mode--cli-version ()
-  "pi CLI version string via `pi --version', or nil."
-  (if (car pi-mode--cli-cache)
-      (cdr pi-mode--cli-cache)
-    (let* ((path (executable-find "pi"))
-           (version (and path
-                         (with-temp-buffer
-                           (call-process path nil t nil "--version")
-                           (string-trim (buffer-string))))))
-      (when (and path version)
-        (setq pi-mode--cli-cache (cons path version)))
-      version)))
+(defun pi-mode--cli-info ()
+  "Return (PATH . VERSION) for the pi CLI, or nil when not found.
+VERSION is nil when `pi --version' fails."
+  (or pi-mode--cli-cache
+      (let* ((path (executable-find "pi"))
+             (version (and path
+                           (with-temp-buffer
+                             (call-process path nil t nil "--version")
+                             (string-trim (buffer-string))))))
+        (when path
+          (setq pi-mode--cli-cache (cons path version)))
+        (and path (cons path version)))))
 
 (defun pi-mode--cli-status ()
   "One-line status string for the pi CLI."
-  (let ((path (pi-mode--cli-path)))
-    (if path
-        (format "pi %s found at %s"
-                (or (pi-mode--cli-version) "?") path)
-      "pi CLI not found in exec-path")))
+  (if-let* ((info (pi-mode--cli-info)))
+      (format "pi %s found at %s" (or (cdr info) "?") (car info))
+    "pi CLI not found in exec-path"))
 
 ;;;###autoload
 (defun pi-mode-check-status ()

@@ -32,9 +32,7 @@
   :type 'boolean
   :group 'pi)
 
-(defvar pi-mode-map
-  (let ((map (make-sparse-keymap)))
-    map)
+(defvar pi-mode-map (make-sparse-keymap)
   "Keymap for `pi-mode' buffers.")
 
 (define-minor-mode pi-mode
@@ -181,9 +179,6 @@ Reuses the live filter and sort of `pi-mode--active-sessions'."
   (cl-loop for s being the hash-values of pi-mode--sessions
            when (eq (pi-mode-session-process s) process) return s))
 
-(defun pi-mode--mru-session (sessions)
-  (car sessions))
-
 (defun pi-mode--visible-sessions (sessions)
   (cl-remove-if-not (lambda (s) (get-buffer-window (pi-mode-session-buffer s))) sessions))
 
@@ -201,17 +196,6 @@ Reuses the live filter and sort of `pi-mode--active-sessions'."
 
 ;;; Lifecycle
 
-(defun pi-mode--unique-buffer-name (base &optional except)
-  "Return BASE, or BASE<N> for the first N that is not in use.
-EXCEPT, when a buffer, is not considered in use — the session's own
-buffer when re-deriving its name during rename."
-  (let ((name base) (n 2))
-    (while (let ((buf (get-buffer name)))
-             (and buf (not (eq buf except))))
-      (setq name (format "%s<%d>" base n)
-            n (1+ n)))
-    name))
-
 (defun pi-mode--ghostel-launch (buffer project-root args)
   "Launch pi in BUFFER for PROJECT-ROOT with ARGS.
 Returns the lifecycle process.  Sets ghostel buffer options that
@@ -221,7 +205,6 @@ Returns the lifecycle process.  Sets ghostel buffer options that
     (unless pi
       (user-error "pi executable not found in exec-path; install pi first"))
     (with-current-buffer buffer
-      (setq-local ghostel-kill-buffer-on-exit nil)
       (prog1 (ghostel-exec buffer pi args)
         (setq-local ghostel-kill-buffer-on-exit nil)
         (setq-local ghostel-buffer-name-function nil)))))
@@ -276,8 +259,8 @@ path re-applies them after the terminal is created."
   "Create an unregistered session struct for PROJECT-ROOT in a new buffer.
 Registration happens in `pi-mode--launch-buffer' after a successful
 launch, so a failed launch leaves nothing behind."
-  (let* ((base (pi-mode--session-base-name project-root name))
-         (buffer-name (pi-mode--unique-buffer-name base)))
+  (let* ((buffer-name (generate-new-buffer-name
+                       (pi-mode--session-base-name project-root name))))
     (with-current-buffer (get-buffer-create buffer-name)
       ;; The session buffer owns the project root as its local
       ;; `default-directory': the dynamic binding in
@@ -446,7 +429,7 @@ The resolved session's `last-used' is updated (MRU semantics)."
            ((and (eq intent 'prompt) (not no-ask))
             (pi-mode--prompt-session sessions))
            (t
-            (let ((mru (pi-mode--mru-session sessions)))
+            (let ((mru (car sessions)))
               (message "pi-mode: using session %s" (pi-mode-session-id mru))
               mru)))))
     (when session
@@ -582,20 +565,14 @@ indicator instead."
   (or (string-match-p "\\`─+\\'" row)
       (string-match-p "\\`─── [↑↓]" row)))
 
-(defun pi-mode--prompt-border-above (rows cursor-row)
-  "Index of the editor border row above CURSOR-ROW in ROWS, or nil."
-  (let ((i (1- cursor-row)))
-    (while (and (>= i 0) (not (pi-mode--prompt-border-row-p (nth i rows))))
-      (cl-decf i))
-    (and (>= i 0) i)))
-
-(defun pi-mode--prompt-border-below (rows cursor-row)
-  "Index of the editor border row below CURSOR-ROW in ROWS, or nil."
-  (let ((i (1+ cursor-row)))
-    (while (and (< i (length rows))
+(defun pi-mode--prompt-border (rows cursor-row step)
+  "Index of the editor border row STEP rows away from CURSOR-ROW in ROWS.
+STEP is -1 to scan upward or 1 to scan downward; nil when none."
+  (let ((i (+ cursor-row step)))
+    (while (and (<= 0 i) (< i (length rows))
                 (not (pi-mode--prompt-border-row-p (nth i rows))))
-      (cl-incf i))
-    (and (< i (length rows)) i)))
+      (cl-incf i step))
+    (and (<= 0 i) (< i (length rows)) i)))
 
 (defun pi-mode--prompt-join-lines (lines wrap-width)
   "Rejoin pi editor LINES (visual wraps) into logical prompt text.
@@ -626,8 +603,8 @@ the cursor row (the input box cannot be located).  SCROLLED-P is
 non-nil when the editor is internally scrolled, meaning ROWS show
 only part of the prompt."
   (let* ((padding-x (or padding-x pi-mode-prompt-editor-padding-x))
-         (top (pi-mode--prompt-border-above rows cursor-row))
-         (bottom (pi-mode--prompt-border-below rows cursor-row)))
+         (top (pi-mode--prompt-border rows cursor-row -1))
+         (bottom (pi-mode--prompt-border rows cursor-row 1)))
     (when (and top bottom)
       (let* ((region (cl-subseq rows (1+ top) bottom))
              (width (apply #'max (mapcar #'string-width
@@ -709,10 +686,6 @@ edit without touching pi."
                                       ", "))))
     (kill-local-variable 'header-line-format)))
 
-(defun pi-mode--prompt-edit-buffer-name (session)
-  "Buffer name for editing SESSION's prompt."
-  (format "*pi prompt %s*" (pi-mode-session-id session)))
-
 (defun pi-mode-prompt-edit-submit ()
   "Replace the pi session's prompt with this buffer's content, then close.
 The session's input box is cleared (pi's app.clear) and the buffer
@@ -746,7 +719,7 @@ with the edited text and closes the buffer; \\[pi-mode-prompt-edit-cancel]
 discards the edit.  With a prefix argument, prompts for the session."
   (interactive)
   (let* ((session (pi-mode--resolve-session current-prefix-arg))
-         (name (pi-mode--prompt-edit-buffer-name session))
+         (name (format "*pi prompt %s*" (pi-mode-session-id session)))
          (buffer (get-buffer name)))
     (if (and (buffer-live-p buffer)
              (buffer-local-value 'pi-mode--prompt-edit-session buffer))
@@ -911,40 +884,37 @@ it.  When `pi-mode-focus-on-open' is non-nil the window is selected
 and focus moves to the session.  Every display refreshes the
 session's MRU stamp, so a `w' restore makes the shown session the
 most-recently-used target."
-  (let* ((args (pi-mode--display-args buffer))
-         (side (nth 0 args))
-         (slot (nth 1 args))
-         (size-key (nth 2 args))
-         (size-value (nth 3 args))
-         (display-buffer-alist
-          `((,(regexp-quote (buffer-name buffer))
-             (display-buffer-in-side-window)
-             (side . ,side)
-             (slot . ,slot)
-             (,size-key . ,size-value)
-             (window-parameters . ((no-delete-other-windows . t))))))
-         (window (display-buffer buffer)))
-    ;; Dedicate the chosen window: display-buffer then never reuses it
-    ;; for an unrelated buffer (cc-ide parity, claude-code-ide.el:997).
-    (when window
-      (set-window-dedicated-p window t)
-      ;; On top/bottom sides the alist `window-height' value sizes the
-      ;; TOTAL height, which drifts from the text height by the mode
-      ;; line; re-set the text height exactly (cc-ide parity,
-      ;; claude-code-ide.el:991-995).
-      (when (memq side '(top bottom))
-        (set-window-text-height window pi-mode-window-height))
-      ;; Every display path funnels through this action function, so
-      ;; selecting here implements focus-on-open for all of them
-      ;; (cc-ide parity, claude-code-ide.el:987-989).
-      (when pi-mode-focus-on-open
-        (select-window window))
-      ;; Refresh MRU on every display: a restore path (`w', `a', `W')
-      ;; must make the shown session the most-recently-used target
-      ;; (cc-ide parity, claude-code-ide.el:979-985).
-      (when-let ((session (pi-mode--session-by-buffer buffer)))
-        (setf (pi-mode-session-last-used session) (current-time))))
-    window))
+  (cl-destructuring-bind (side slot size-key size-value)
+      (pi-mode--display-args buffer)
+    (let* ((display-buffer-alist
+            `((,(regexp-quote (buffer-name buffer))
+               (display-buffer-in-side-window)
+               (side . ,side)
+               (slot . ,slot)
+               (,size-key . ,size-value)
+               (window-parameters . ((no-delete-other-windows . t))))))
+           (window (display-buffer buffer)))
+      ;; Dedicate the chosen window: display-buffer then never reuses it
+      ;; for an unrelated buffer (cc-ide parity, claude-code-ide.el:997).
+      (when window
+        (set-window-dedicated-p window t)
+        ;; On top/bottom sides the alist `window-height' value sizes the
+        ;; TOTAL height, which drifts from the text height by the mode
+        ;; line; re-set the text height exactly (cc-ide parity,
+        ;; claude-code-ide.el:991-995).
+        (when (memq side '(top bottom))
+          (set-window-text-height window pi-mode-window-height))
+        ;; Every display path funnels through this action function, so
+        ;; selecting here implements focus-on-open for all of them
+        ;; (cc-ide parity, claude-code-ide.el:987-989).
+        (when pi-mode-focus-on-open
+          (select-window window))
+        ;; Refresh MRU on every display: a restore path (`w', `a', `W')
+        ;; must make the shown session the most-recently-used target
+        ;; (cc-ide parity, claude-code-ide.el:979-985).
+        (when-let ((session (pi-mode--session-by-buffer buffer)))
+          (setf (pi-mode-session-last-used session) (current-time))))
+      window)))
 
 (defconst pi-mode--window-slot-block 16
   "Side-window slots reserved per project.
@@ -958,38 +928,33 @@ claude-code-ide.el:846-893).")
 Each project owns a block of `pi-mode--window-slot-block' slots, so
 its windows sort together rather than by creation order.  Within the
 block the smallest slot not used by any live session is picked (the
-global check also keeps legacy out-of-block slots collision-free);
-when the block is exhausted the slot overflows into a fresh block
-that no live session occupies."
+global check also keeps legacy out-of-block slots collision-free); a
+block exhausted beyond any plausible session count falls back to a
+slot past every live one rather than colliding."
   (let* ((block pi-mode--window-slot-block)
          (siblings (cl-remove-if-not #'pi-mode-session-window-slot
                                      (pi-mode--project-sessions root)))
          (all-slots (cl-remove nil
                                (mapcar #'pi-mode-session-window-slot
-                                       (pi-mode--active-sessions)))))
-    (cl-flet ((free-block-base ()
-                (let ((used-bases (mapcar (lambda (slot) (floor slot block))
-                                          all-slots))
-                      (b 0))
-                  (while (memq b used-bases)
-                    (cl-incf b))
-                  (* block b))))
-      (let* ((base (if siblings
-                       ;; Join the project's existing block
-                       (* block (floor (pi-mode-session-window-slot
-                                        (car siblings))
-                                       block))
-                     ;; New project: smallest block no live session occupies
-                     (free-block-base)))
-             (slot base))
-        (while (and (< slot (+ base block))
-                    (memq slot all-slots))
-          (cl-incf slot))
-        ;; Block exhausted: overflow into a fresh block rather than
-        ;; spilling into a neighboring project's block
-        (when (>= slot (+ base block))
-          (setq slot (free-block-base)))
-        slot))))
+                                       (pi-mode--active-sessions))))
+         (base (if siblings
+                   ;; Join the project's existing block
+                   (* block (floor (pi-mode-session-window-slot
+                                    (car siblings))
+                                   block))
+                 ;; New project: smallest block no live session occupies
+                 (cl-loop for b from 0
+                          while (memq (* b block) all-slots)
+                          finally (return (* b block))))))
+    (let ((slot base))
+      (while (and (< slot (+ base block))
+                  (memq slot all-slots))
+        (cl-incf slot))
+      (if (< slot (+ base block))
+          slot
+        ;; Block exhausted: overflow past every live slot rather than
+        ;; spilling into a neighboring project's block.
+        (1+ (if all-slots (apply #'max all-slots) -1))))))
 
 ;; Pi buffers dock in a side window; the action function reads the
 ;; window customization at display time, so changing the defcustoms
@@ -1088,7 +1053,7 @@ project's most recently used session."
                                   (equal (pi-mode-session-project-root s)
                                          root)))
                            hidden)
-                          (list (pi-mode--mru-session sessions)))))
+                          (list (car sessions)))))
         (pi-mode--hidden-panel-set nil)
         (dolist (session restore)
           (display-buffer (pi-mode-session-buffer session)))
@@ -1180,7 +1145,7 @@ stopped sessions), falling back to the most recently used session."
         (message "Restored %d pi window%s"
                  (length restore) (if (cdr restore) "s" ""))))
      (t
-      (let ((session (pi-mode--mru-session all)))
+      (let ((session (car all)))
         (display-buffer (pi-mode-session-buffer session))
         (message "Opened most recent pi session"))))))
 

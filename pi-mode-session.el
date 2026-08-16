@@ -16,12 +16,6 @@
 
 (require 'pi-mode)
 
-(defcustom pi-mode-session-dir-function #'pi-mode--session-dir
-  "Function returning the pi session directory for a project root.
-The test seam for session fixtures."
-  :type 'function
-  :group 'pi)
-
 (defun pi-mode--session-dir (root)
   "Return pi's session directory for project ROOT.
 
@@ -40,13 +34,9 @@ after its resolved cwd (on macOS `/var/...' is `/private/var/...')."
 
 (defun pi-mode--session-files (root)
   "Return pi session .jsonl files for project ROOT."
-  (let ((dir (funcall pi-mode-session-dir-function root)))
+  (let ((dir (pi-mode--session-dir root)))
     (when (file-directory-p dir)
       (directory-files dir t "\\.jsonl\\'"))))
-
-(defun pi-mode--session-command-args (flag)
-  "Return pi launch args for a session FLAG (e.g. \"-c\")."
-  (append pi-mode-cli-args (list flag)))
 
 ;;;###autoload
 (defun pi-mode-session-continue ()
@@ -55,7 +45,7 @@ Prompts for an instance name when the project already has running
 sessions, or with a prefix argument."
   (interactive)
   (let ((root (pi-mode--project-root)))
-    (pi-mode--launch-buffer root (pi-mode--session-command-args "-c")
+    (pi-mode--launch-buffer root (append pi-mode-cli-args (list "-c"))
                             (pi-mode--maybe-read-instance-name root))))
 
 ;;;###autoload
@@ -65,7 +55,7 @@ Prompts for an instance name when the project already has running
 sessions, or with a prefix argument."
   (interactive)
   (let ((root (pi-mode--project-root)))
-    (pi-mode--launch-buffer root (pi-mode--session-command-args "-r")
+    (pi-mode--launch-buffer root (append pi-mode-cli-args (list "-r"))
                             (pi-mode--maybe-read-instance-name root))))
 
 ;;;###autoload
@@ -105,9 +95,9 @@ terminal buffer so the buffer name and the display name stay in sync."
     ;; Rename the terminal buffer and re-key the registry, preserving the
     ;; id = buffer-name invariant `pi-mode--session-by-buffer' relies on.
     (let ((new-buffer-name
-           (pi-mode--unique-buffer-name
+           (generate-new-buffer-name
             (pi-mode--session-base-name root new-name)
-            (pi-mode-session-buffer session))))
+            (buffer-name (pi-mode-session-buffer session)))))
       (pi-mode--unregister-session (pi-mode-session-id session))
       (setf (pi-mode-session-id session) new-buffer-name)
       (with-current-buffer (pi-mode-session-buffer session)
