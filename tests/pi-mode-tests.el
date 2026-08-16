@@ -647,6 +647,59 @@
         (kill-buffer b) (kill-buffer b2)
         (delete-process p) (delete-process p2)))))
 
+(ert-deftest pi-mode-test-prompt-session-candidates ()
+  "Prompt candidates carry name, abbreviated project and visibility."
+  (let ((b1 (get-buffer-create "*pi[c1]*"))
+        (b2 (get-buffer-create "*pi[c2]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let* ((s1 (make-pi-mode-session :id "*pi[c1]*" :buffer b1 :process p1
+                                         :project-root "/tmp/proj-a/"
+                                         :name "refactor" :last-used (current-time)))
+               (s2 (make-pi-mode-session :id "*pi[c2]*" :buffer b2 :process p2
+                                         :project-root "/tmp/proj-b/"
+                                         :last-used (current-time)))
+               (captured nil))
+          (pi-mode--register-session s1)
+          (pi-mode--register-session s2)
+          (display-buffer b2)          ; s2 is visible
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (prompt collection &rest _)
+                       (setq captured collection)
+                       (car (rassq s1 collection)))))
+            (should (eq (pi-mode--prompt-session (list s1 s2)) s1)))
+          ;; the exact candidate format: name — abbreviated path (state)
+          (should (equal (car (rassq s1 captured))
+                         "refactor — /tmp/proj-a/ (hidden)"))
+          ;; unnamed session: project directory name + visible state
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (car (rassq s2 collection)))))
+            (should (eq (pi-mode--prompt-session (list s1 s2)) s2)))
+          (should (equal (car (rassq s2 captured))
+                         "proj-b — /tmp/proj-b/ (visible)")))
+      (pi-mode--unregister-session "*pi[c1]*")
+      (pi-mode--unregister-session "*pi[c2]*")
+      (kill-buffer b1) (kill-buffer b2)
+      (delete-process p1) (delete-process p2))))
+
+(ert-deftest pi-mode-test-prompt-session-id-fallback ()
+  "A raw session id still resolves (legacy callers and tests)."
+  (let ((b (get-buffer-create "*pi[c1]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[c1]*" :buffer b :process p
+                                       :project-root "/tmp/proj-a/"
+                                       :name "refactor" :last-used (current-time))))
+          (pi-mode--register-session s)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) "*pi[c1]*")))
+            (should (eq (pi-mode--prompt-session (list s)) s))))
+      (pi-mode--unregister-session "*pi[c1]*")
+      (kill-buffer b)
+      (delete-process p))))
+
 (ert-deftest pi-mode-test-resolve-mru-ignores-foreign ()
   "The MRU branch picks the current project's MRU, never a foreign one."
   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))

@@ -396,11 +396,27 @@ first instance."
 ;;; Target resolution
 
 (defun pi-mode--prompt-session (sessions)
-  "Prompt for one of SESSIONS and return it."
-  (let ((id (completing-read "pi session: "
-                             (mapcar #'pi-mode-session-id sessions)
-                             nil t)))
-    (gethash id pi-mode--sessions)))
+  "Prompt for one of SESSIONS and return it.
+Candidates carry the display name, abbreviated project path and
+visibility state, so sessions of different projects are
+distinguishable (cc-ide parity, claude-code-ide.el:1663-1680).
+A raw session id also matches (legacy callers)."
+  (let* ((candidates
+          (mapcar
+           (lambda (s)
+             (cons (format "%s — %s (%s)"
+                           (or (pi-mode-session-name s)
+                               (file-name-nondirectory
+                                (directory-file-name
+                                 (pi-mode-session-project-root s))))
+                           (abbreviate-file-name (pi-mode-session-project-root s))
+                           (if (pi-mode--visible-sessions (list s))
+                               "visible" "hidden"))
+                   s))
+           sessions))
+         (choice (completing-read "pi session: " candidates nil t)))
+    (or (gethash choice pi-mode--sessions)
+        (cdr (assoc choice candidates)))))
 
 (defun pi-mode--resolve-session (&optional prefix no-ask intent)
   "Resolve the target session for a command.
