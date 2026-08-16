@@ -129,6 +129,15 @@ scrollback) after the process ends."
   :type 'boolean
   :group 'pi)
 
+(defcustom pi-mode-launch-settle-delay 0.1
+  "Seconds to wait after launching pi before checking the process is alive.
+The terminal backend may take a moment to surface an immediate CLI
+death; the wait lets it happen before the liveness check, so a dead
+process errors instead of displaying a stale terminal buffer.
+Parity with cc-ide's `claude-code-ide-terminal-initialization-delay'."
+  :type 'number
+  :group 'pi)
+
 (defvar pi-mode--sessions (make-hash-table :test #'equal)
   "Hash table of live pi sessions keyed by session id (buffer name).")
 
@@ -298,6 +307,15 @@ launch fails the scratch buffer is removed."
     (unwind-protect
         (let* ((buffer (pi-mode-session-buffer session))
                (process (pi-mode--ghostel-launch buffer project-root args)))
+          ;; Give a process that dies right after spawn time to surface,
+          ;; then fail with a real explanation instead of displaying a
+          ;; dead terminal buffer (cc-ide parity,
+          ;; claude-code-ide.el:1477-1484).  The process slot is still
+          ;; nil here, so the unwind-protect below removes the buffer.
+          (sleep-for pi-mode-launch-settle-delay)
+          (unless (process-live-p process)
+            (error "pi exited immediately after startup.  Verify that the pi binary (%s) is executable and launches in %s"
+                   (executable-find "pi") project-root))
           (setf (pi-mode-session-process session) process)
           ;; ghostel-exec activates ghostel-mode, whose
           ;; kill-all-local-variables wipes the session locals; re-apply

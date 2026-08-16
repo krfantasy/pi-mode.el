@@ -30,7 +30,8 @@
 (defun pi-mode-test--with-mock-ghostel (body)
   "Run BODY with the ghostel exec/send surface replaced by recorders."
   (let ((pi-mode-test--calls nil)
-        (pi-mode-confirm-kill nil))   ; keep kill-buffer hooks inert in batch
+        (pi-mode-confirm-kill nil)     ; keep kill-buffer hooks inert in batch
+        (pi-mode-launch-settle-delay 0)) ; hermetic: no real launch sleeps
     (clrhash pi-mode--sessions)      ; hermetic: no cross-test session leaks
     (cl-letf (((symbol-function 'ghostel-exec)
                (lambda (&rest args)
@@ -295,6 +296,29 @@
      (cl-letf (((symbol-function 'executable-find) (lambda (_s) nil)))
        (should-error (pi-mode--launch-buffer "/tmp/proj/" nil)
                      :type 'user-error))
+     (should (= (hash-table-count pi-mode--sessions) sessions-before))
+     (should (= (length (cl-remove-if-not
+                         (lambda (b) (string-match-p "\\*pi\\[" (buffer-name b)))
+                         (buffer-list)))
+                buffers-before)))))
+
+(ert-deftest pi-mode-test-launch-immediate-death-leaves-no-trace ()
+  "A process that dies during launch errors and leaves no buffer."
+  (pi-mode-test-with-mock-ghostel
+   (let ((sessions-before (hash-table-count pi-mode--sessions))
+         (buffers-before (length (cl-remove-if-not
+                                  (lambda (b) (string-match-p "\\*pi\\[" (buffer-name b)))
+                                  (buffer-list)))))
+     (cl-letf (((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+               ((symbol-function 'ghostel-exec)
+                (lambda (&rest _args)
+                  (let ((p (make-pipe-process :name "pi-mode-test-dead" :buffer nil)))
+                    (delete-process p)
+                    p))))
+       (let ((err (should-error (pi-mode--launch-buffer "/tmp/proj/" nil)
+                                :type 'error)))
+         (should (string-match-p "exited immediately after startup"
+                                 (error-message-string err)))))
      (should (= (hash-table-count pi-mode--sessions) sessions-before))
      (should (= (length (cl-remove-if-not
                          (lambda (b) (string-match-p "\\*pi\\[" (buffer-name b)))
