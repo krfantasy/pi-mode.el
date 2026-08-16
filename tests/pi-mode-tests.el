@@ -998,8 +998,14 @@ Regression: stale use-package :config blocks calling
           (should (equal (pi-mode--display-args b)
                          '(bottom 0 window-height 20)))
           (let ((pi-mode-window-side 'right))
-            (should (equal (pi-mode--display-args b)
-                           '(right 0 window-width 100))))
+            (let ((args (pi-mode--display-args b)))
+              (should (eq (nth 0 args) 'right))
+              (should (= (nth 1 args) 0))
+              (should (eq (nth 2 args) 'window-width))
+              ;; the width value is a resize-delta function so the body
+              ;; width lands exactly on pi-mode-window-width, fringes
+              ;; and margins notwithstanding
+              (should (functionp (nth 3 args)))))
           (let ((s (make-pi-mode-session :id "*pi[da]*" :buffer b :process p
                                          :project-root "/tmp/" :window-slot 3)))
             (pi-mode--register-session s)
@@ -1007,6 +1013,42 @@ Regression: stale use-package :config blocks calling
                            '(bottom 3 window-height 20)))
             (pi-mode--unregister-session "*pi[da]*")))
       (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-display-buffer-exact-width ()
+  "A left/right pi side window ends with exactly `pi-mode-window-width'
+body columns, compensating the fringe/margin delta."
+  (let* ((frame-width (frame-text-width))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (b (get-buffer-create "*pi[ew]*")))
+    (unwind-protect
+        (progn
+          (set-frame-width (selected-frame) 140)
+          (with-current-buffer b
+            (setq-local pi-mode--session (make-pi-mode-session :id "*pi[ew]*")))
+          (let ((win (display-buffer b)))
+            (should (windowp win))
+            (should (= (window-body-width win) 60))))
+      (kill-buffer b)
+      (set-frame-width (selected-frame) frame-width))))
+
+(ert-deftest pi-mode-test-display-buffer-exact-height ()
+  "A top/bottom pi side window ends with exactly `pi-mode-window-height'
+text lines."
+  (let* ((frame-height (frame-text-height))
+         (pi-mode-window-side 'bottom)
+         (pi-mode-window-height 20)
+         (b (get-buffer-create "*pi[eh]*")))
+    (unwind-protect
+        (progn
+          (set-frame-height (selected-frame) 50)
+          (with-current-buffer b
+            (setq-local pi-mode--session (make-pi-mode-session :id "*pi[eh]*")))
+          (let ((win (display-buffer b)))
+            (should (windowp win))
+            (should (= (window-text-height win) 20))))
+      (kill-buffer b)
+      (set-frame-height (selected-frame) frame-height))))
 
 (ert-deftest pi-mode-test-display-buffer-entry ()
   "Session buffers are displayed in a side window via the predicate condition.

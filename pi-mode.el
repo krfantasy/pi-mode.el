@@ -727,9 +727,12 @@ This sets the usable text area width, excluding fringes and margins."
 (defun pi-mode--display-args (buffer)
   "Return (SIDE SLOT SIZE-KEY SIZE-VALUE) for displaying BUFFER.
 SIDE is `pi-mode-window-side'; SLOT is the session's `window-slot'
-(or 0); SIZE-KEY is `window-width' on left/right sides and
-`window-height' otherwise, with the matching defcustom value.
-Reading the customization at display time keeps changes live without
+(or 0).  On left/right sides SIZE-KEY is `window-width' and
+SIZE-VALUE a function that resizes the chosen window so its body
+width lands exactly on `pi-mode-window-width', compensating the
+fringe/margin delta; on top/bottom sides SIZE-KEY is
+`window-height' and SIZE-VALUE `pi-mode-window-height'.  Reading
+the customization at display time keeps changes live without
 re-adding a `display-buffer-alist' entry."
   (let* ((side pi-mode-window-side)
          (slot (or (when-let ((session (pi-mode--session-by-buffer buffer)))
@@ -738,14 +741,25 @@ re-adding a `display-buffer-alist' entry."
          (left-or-right (memq side '(left right))))
     (list side slot
           (if left-or-right 'window-width 'window-height)
-          (if left-or-right pi-mode-window-width pi-mode-window-height))))
+          (if left-or-right
+              ;; display-buffer calls the function with the chosen
+              ;; window and ignores its return value; resize failures
+              ;; on undersized frames are swallowed by display-buffer.
+              (lambda (win)
+                (let ((delta (- pi-mode-window-width
+                                (window-body-width win))))
+                  (unless (zerop delta)
+                    (window-resize win delta t))))
+            pi-mode-window-height))))
 
 (defun pi-mode--display-buffer (buffer _alist)
   "Display BUFFER in a side window per `pi-mode-window-side' and size.
 Each pi session occupies its own slot, so several sessions can be
-visible side by side instead of evicting each other.  The chosen
-window is dedicated to its session buffer and carries the
-`no-delete-other-windows' parameter, so `delete-other-windows'
+visible side by side instead of evicting each other.  Left/right
+windows are sized to exactly `pi-mode-window-width' body columns;
+top/bottom windows to exactly `pi-mode-window-height' text lines.
+The chosen window is dedicated to its session buffer and carries
+the `no-delete-other-windows' parameter, so `delete-other-windows'
 \(C-x 1) keeps it and unrelated `display-buffer' calls cannot reuse
 it."
   (let* ((args (pi-mode--display-args buffer))
@@ -764,7 +778,13 @@ it."
     ;; Dedicate the chosen window: display-buffer then never reuses it
     ;; for an unrelated buffer (cc-ide parity, claude-code-ide.el:997).
     (when window
-      (set-window-dedicated-p window t))
+      (set-window-dedicated-p window t)
+      ;; On top/bottom sides the alist `window-height' value sizes the
+      ;; TOTAL height, which drifts from the text height by the mode
+      ;; line; re-set the text height exactly (cc-ide parity,
+      ;; claude-code-ide.el:991-995).
+      (when (memq side '(top bottom))
+        (set-window-text-height window pi-mode-window-height)))
     window))
 
 (defun pi-mode--assign-window-slot ()
