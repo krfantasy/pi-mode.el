@@ -743,19 +743,29 @@ re-adding a `display-buffer-alist' entry."
 (defun pi-mode--display-buffer (buffer _alist)
   "Display BUFFER in a side window per `pi-mode-window-side' and size.
 Each pi session occupies its own slot, so several sessions can be
-visible side by side instead of evicting each other."
+visible side by side instead of evicting each other.  The chosen
+window is dedicated to its session buffer and carries the
+`no-delete-other-windows' parameter, so `delete-other-windows'
+\(C-x 1) keeps it and unrelated `display-buffer' calls cannot reuse
+it."
   (let* ((args (pi-mode--display-args buffer))
          (side (nth 0 args))
          (slot (nth 1 args))
          (size-key (nth 2 args))
-         (size-value (nth 3 args)))
-    (let ((display-buffer-alist
-           `((,(regexp-quote (buffer-name buffer))
-              (display-buffer-in-side-window)
-              (side . ,side)
-              (slot . ,slot)
-              (,size-key . ,size-value)))))
-      (display-buffer buffer))))
+         (size-value (nth 3 args))
+         (display-buffer-alist
+          `((,(regexp-quote (buffer-name buffer))
+             (display-buffer-in-side-window)
+             (side . ,side)
+             (slot . ,slot)
+             (,size-key . ,size-value)
+             (window-parameters . ((no-delete-other-windows . t))))))
+         (window (display-buffer buffer)))
+    ;; Dedicate the chosen window: display-buffer then never reuses it
+    ;; for an unrelated buffer (cc-ide parity, claude-code-ide.el:997).
+    (when window
+      (set-window-dedicated-p window t))
+    window))
 
 (defun pi-mode--assign-window-slot ()
   "Return the smallest side-window slot not used by a live session."
@@ -873,8 +883,11 @@ pi-free instead; summon sessions there explicitly."
                (pi-mode--session-buffer-p (window-buffer window)))
       (unless (ignore-errors (delete-window window) t)
         ;; The sole window of the tab cannot be deleted — show another
-        ;; buffer in it instead.
+        ;; buffer in it instead.  Pi windows are dedicated, and
+        ;; `switch-to-prev-buffer' and `set-window-buffer' signal on
+        ;; dedicated windows, so clear the dedication first.
         (when (window-live-p window)
+          (set-window-dedicated-p window nil)
           (switch-to-prev-buffer window 'bury)
           (when (pi-mode--session-buffer-p (window-buffer window))
             (set-window-buffer window (get-buffer-create "*scratch*"))))))))

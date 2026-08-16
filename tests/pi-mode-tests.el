@@ -1021,7 +1021,9 @@ list so the action unwraps to a function list."
             (should (windowp window))
             (should (eq (window-buffer window) b))
             (should (eq (window-parameter window 'window-side)
-                        pi-mode-window-side))))
+                        pi-mode-window-side))
+            (should (window-dedicated-p window))
+            (should (window-parameter window 'no-delete-other-windows))))
       (kill-buffer b))))
 
 (ert-deftest pi-mode-test-display-buffer-non-session-ignored ()
@@ -1032,6 +1034,39 @@ list so the action unwraps to a function list."
           (should (windowp window))
           (should-not (window-parameter window 'window-side)))
       (kill-buffer b))))
+
+(ert-deftest pi-mode-test-delete-other-windows-keeps-pi-window ()
+  "C-x 1 keeps the pi side window (no-delete-other-windows)."
+  (let ((b (get-buffer-create "*pi[protect]*")))
+    (unwind-protect
+        (with-current-buffer b
+          (setq-local pi-mode--session (make-pi-mode-session :id "*pi[protect]*"))
+          (let ((win (display-buffer b))
+                (other (display-buffer (get-buffer-create "*plain-protect*"))))
+            (select-window other)
+            (delete-other-windows)
+            (should (window-live-p win))
+            (should (eq (window-buffer win) b))))
+      (kill-buffer b)
+      (kill-buffer "*plain-protect*"))))
+
+(ert-deftest pi-mode-test-display-buffer-does-not-reuse-dedicated ()
+  "A dedicated pi window cannot be reused for an unrelated buffer."
+  (let ((b (get-buffer-create "*pi[ded]*"))
+        (plain (get-buffer-create "*plain-ded*")))
+    (unwind-protect
+        (with-current-buffer b
+          (setq-local pi-mode--session (make-pi-mode-session :id "*pi[ded]*"))
+          (let ((w1 (display-buffer b))
+                (w2 (display-buffer plain)))
+            (should (windowp w1))
+            (should (windowp w2))
+            (should-not (eq w2 w1))
+            (should (eq (window-buffer w1) b))
+            ;; Taking the window over would go through `set-window-buffer';
+            ;; dedication refuses it.
+            (should-error (set-window-buffer w1 plain))))
+      (kill-buffer b) (kill-buffer plain))))
 
 (ert-deftest pi-mode-test-window-commands-no-sessions ()
   "Window commands handle the no-sessions case by signaling `user-error'."
@@ -1454,6 +1489,36 @@ notwithstanding; the foreign window stays."
           (should (get-buffer-window b))
           (pi-mode--strip-new-tab-pi-windows)
           (should-not (get-buffer-window b)))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-strip-new-tab-dedicated-sole-window ()
+  "Strip clears dedication in the sole-window fallback.
+Pi windows are dedicated, and `switch-to-prev-buffer' /
+`set-window-buffer' signal on dedicated windows; the fallback must
+clear the dedication first.  Emacs never lets a side window be the
+frame's sole window, so construct the state directly: the session
+buffer in the frame's sole regular window, dedicated."
+  (let* ((pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[stripsole]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[stripsole]*" :buffer b :process p
+                                  :project-root "/tmp/")))
+    (unwind-protect
+        (progn
+          (with-current-buffer b (setq-local pi-mode--session s))
+          ;; Collapse the frame to a single regular window (other tests
+          ;; may have left windows behind), then show the session buffer
+          ;; there and dedicate it.
+          (let ((regular (cl-find-if
+                          (lambda (w) (not (window-parameter w 'window-side)))
+                          (window-list))))
+            (select-window regular)
+            (delete-other-windows))
+          (switch-to-buffer b)
+          (set-window-dedicated-p (selected-window) t)
+          (pi-mode--strip-new-tab-pi-windows)
+          (should-not (pi-mode--session-buffer-p
+                       (window-buffer (selected-window)))))
       (kill-buffer b) (delete-process p))))
 
 (ert-deftest pi-mode-test-strip-new-tab-leaves-others ()
