@@ -50,7 +50,7 @@ navigation b/w/W/a, interaction i/p/n/f/E/e, submenus C/d."
     ("W" "Toggle recent" pi-mode-toggle-recent)
     ("a" "Show all" pi-mode-show-all)]
    ["Interaction"
-    ("i" "Insert region" pi-mode-send-region)
+    ("i" "Insert selection" pi-mode-insert-selection)
     ("p" "Send prompt" pi-mode-send-prompt)
     ("n" "Insert newline" pi-mode-insert-newline)
     ("f" "Insert file ref" pi-mode-send-file)

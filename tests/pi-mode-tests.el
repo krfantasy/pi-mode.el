@@ -946,6 +946,144 @@
   (pi-mode-test-with-mock-ghostel
    (should-error (pi-mode-send-region 1 1) :type 'user-error)))
 
+(ert-deftest pi-mode-test-insert-selection-live-region ()
+  "insert-selection pastes the live region without submitting."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[isl]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[isl]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-temp-buffer
+             (insert "hello world")
+             (goto-char 1)
+             (set-mark 6)
+             (activate-mark)
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (pi-mode-insert-selection)))
+           (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                          '("hello")))
+           ;; insert-only: no return key was sent
+           (should-not (assq 'ghostel-send-key pi-mode-test--calls)))
+       (pi-mode--unregister-session "*pi[isl]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-insert-selection-remembers-deactivated-region ()
+  "insert-selection uses the tracked region after it was deactivated."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[isr]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[isr]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (src (get-buffer-create "*pi-test-sel-src*")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           ;; Snapshot an active region in a FILE buffer, then deactivate
+           ;; it and move point away (transient-selection workflow).
+           (with-current-buffer src
+             (erase-buffer)
+             (insert "alpha beta")
+             (set-visited-file-name "/tmp/pi-mode-test-sel.el")
+             (set-mark 1)
+             (goto-char 6)
+             (activate-mark)
+             (pi-mode--track-selection)
+             (deactivate-mark)
+             (goto-char 12))
+           ;; The region is gone; the tracked snapshot still inserts.
+           (with-temp-buffer
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (pi-mode-insert-selection)))
+           (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                          '("alpha"))))
+       (pi-mode--unregister-session "*pi[isr]*")
+       (kill-buffer b) (delete-process p)
+       (when (buffer-live-p src) (kill-buffer src))))))
+
+(ert-deftest pi-mode-test-insert-selection-no-selection ()
+  "insert-selection errors when there is no region to insert."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[isn]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[isn]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (setq pi-mode--last-selection nil)
+           (with-temp-buffer
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (should-error (pi-mode-insert-selection) :type 'user-error))))
+       (pi-mode--unregister-session "*pi[isn]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-insert-selection-dead-source-buffer ()
+  "insert-selection errors when the tracked source buffer is dead."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[isd]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[isd]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (src (get-buffer-create "*pi-test-sel-src-d*")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer src
+             (erase-buffer)
+             (insert "hello world")
+             (set-visited-file-name "/tmp/pi-mode-test-sel-d.el")
+             (set-mark 1)
+             (goto-char 6)
+             (activate-mark)
+             (pi-mode--track-selection))
+           (kill-buffer src)
+           (with-temp-buffer
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (should-error (pi-mode-insert-selection) :type 'user-error))))
+       (pi-mode--unregister-session "*pi[isd]*")
+       (kill-buffer b) (delete-process p)
+       (when (buffer-live-p src) (kill-buffer src))))))
+
+(ert-deftest pi-mode-test-track-selection-file-buffer-only ()
+  "track-selection snapshots only regions in file buffers."
+  (let ((src (get-buffer-create "*pi-test-sel-src-f*")))
+    (unwind-protect
+        (let ((pi-mode--last-selection '(old)))
+          ;; A region in a non-file buffer must not overwrite the snapshot.
+          (with-temp-buffer
+            (insert "scratch region")
+            (goto-char 1)
+            (set-mark 7)
+            (activate-mark)
+            (pi-mode--track-selection)
+            (should (equal pi-mode--last-selection '(old))))
+          ;; A region in a file buffer does.
+          (with-current-buffer src
+            (erase-buffer)
+            (insert "hello world")
+            (set-visited-file-name "/tmp/pi-mode-test-sel-f.el")
+            (set-mark 1)
+            (goto-char 6)
+            (activate-mark)
+            (pi-mode--track-selection))
+          (should (eq (nth 0 pi-mode--last-selection) src))
+          (should (equal (nth 1 pi-mode--last-selection) 1))
+          (should (equal (nth 2 pi-mode--last-selection) 6)))
+      (kill-buffer src))))
+
+(ert-deftest pi-mode-test-menu-i-insert-selection ()
+  "The Interaction column binds i to insert-selection."
+  (should (commandp 'pi-mode-insert-selection))
+  (let ((suffixes (pi-mode-test--menu-suffixes 'pi-mode-menu)))
+    (should (equal (cdr (assoc "i" suffixes)) 'pi-mode-insert-selection))))
+
 (ert-deftest pi-mode-test-send-file-inserts-reference ()
   "send-file inserts an @-reference relative to the session's cwd."
   (pi-mode-test-with-mock-ghostel

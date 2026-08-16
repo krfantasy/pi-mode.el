@@ -770,6 +770,48 @@ discards the edit.  With a prefix argument, prompts for the session."
 
 ;;; Region and file sending
 
+(defvar pi-mode--last-selection nil
+  "Last active region snapshot (BUFFER START END), or nil.
+Updated by `pi-mode--track-selection' on every command while a region
+is active in a file buffer.  `pi-mode-insert-selection' falls back to
+it when the region was deactivated before the command ran.")
+
+(defun pi-mode--track-selection ()
+  "Snapshot the current region for `pi-mode-insert-selection'.
+Runs on `post-command-hook'; only file buffers are tracked (the pi
+terminal and non-file buffers are not selection sources).  This is
+pi-mode's stand-in for cc-ide's MCP selection tracking, minus the
+MCP plane (claude-code-ide-mcp.el:717-736)."
+  (when (and (buffer-file-name) (use-region-p))
+    (setq pi-mode--last-selection
+          (list (current-buffer) (region-beginning) (region-end)))))
+
+(add-hook 'post-command-hook #'pi-mode--track-selection)
+
+;;;###autoload
+(defun pi-mode-insert-selection ()
+  "Insert the current or last region into the target pi session's prompt.
+The text is pasted without submitting (press Return in the pi buffer
+to send it).  An active region wins; otherwise the last region that
+was active in a file buffer is used, so a selection that was
+deactivated before the command ran (e.g. in transient-selection-mode
+workflows) is still inserted.  Signals `user-error' when there is no
+region to insert."
+  (interactive)
+  (let* ((session (pi-mode--resolve-session nil t))
+         (content
+          (cond
+           ((use-region-p)
+            (pi-mode--track-selection) ; keep the snapshot fresh
+            (buffer-substring-no-properties (region-beginning) (region-end)))
+           ((and pi-mode--last-selection
+                 (buffer-live-p (car pi-mode--last-selection)))
+            (with-current-buffer (car pi-mode--last-selection)
+              (buffer-substring-no-properties (nth 1 pi-mode--last-selection)
+                                              (nth 2 pi-mode--last-selection))))
+           (t (user-error "No active or recent region to insert")))))
+      (pi-mode--insert-text session content)))
+
 ;;;###autoload
 (defun pi-mode-send-region (start end)
   "Insert the region into the target pi session's prompt input.
