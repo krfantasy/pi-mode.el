@@ -337,8 +337,10 @@ hides and restores them."
                   (let ((b2 (pi-mode-session-buffer second))
                         (p2 (pi-mode-session-process second)))
                     (should (pi-mode-e2e--wait-ready p2 b2 project-root))
-                    ;; stop with confirmation
-                    (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+                    ;; stop from the second session's buffer: the target
+                    ;; is unambiguous and stop no longer confirms (cc-ide
+                    ;; parity)
+                    (with-current-buffer b2
                       (pi-mode-session-stop))
                     (pi-mode-e2e--wait p2 b2
                       (lambda () (not (process-live-p p2)))

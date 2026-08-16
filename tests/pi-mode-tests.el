@@ -1077,8 +1077,8 @@
        (kill-buffer b1) (kill-buffer b2)
        (delete-process p1) (delete-process p2)))))
 
-(ert-deftest pi-mode-test-session-stop-prompts ()
-  "stop requires confirmation then deletes the process."
+(ert-deftest pi-mode-test-session-stop-no-confirm ()
+  "stop from the session's own buffer stops it without confirmation."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[st]*"))
           (p (pi-mode-test--fake-process))
@@ -1090,26 +1090,17 @@
            (with-current-buffer b
              (cl-letf (((symbol-function 'pi-mode--project-root)
                         (lambda () "/tmp/"))
-                       ((symbol-function 'y-or-n-p) (lambda (_) t)))
-               (pi-mode-session-stop))
-             (should (not (process-live-p p))))
-           ;; second half: decline with a fresh live process
-           (let ((p2 (pi-mode-test--fake-process)))
-             (setf (pi-mode-session-process s) p2)
-             (pi-mode--register-session s)
-             (with-current-buffer b
-               (cl-letf (((symbol-function 'pi-mode--project-root)
-                          (lambda () "/tmp/"))
-                         ((symbol-function 'y-or-n-p) (lambda (_) nil)))
-                 (pi-mode-session-stop))
-               (should (process-live-p p2))
-               (delete-process p2)))
-           (pi-mode--unregister-session "*pi[st]*"))
+                       ((symbol-function 'y-or-n-p)
+                        (lambda (&rest _) (error "stop must not confirm"))))
+               (pi-mode-session-stop)))
+           (should-not (process-live-p p))
+           (should (pi-mode-session-exit-requested s)))
+       (pi-mode--unregister-session "*pi[st]*")
        (kill-buffer b)
        (ignore-errors (delete-process p))))))
 
 (ert-deftest pi-mode-test-session-stop-intent-prompt ()
-  "stop prompts between project sessions and stops the chosen one."
+  "stop prompts between project sessions, stops the chosen one, no confirm."
   (pi-mode-test-with-mock-ghostel
    (let* ((b1 (get-buffer-create "*pi[sp1]*"))
           (b2 (get-buffer-create "*pi[sp2]*"))
@@ -1129,17 +1120,72 @@
                       (lambda () "/tmp/"))
                      ((symbol-function 'completing-read)
                       (lambda (&rest _) "*pi[sp1]*"))
-                     ((symbol-function 'y-or-n-p) (lambda (_) t)))
+                     ((symbol-function 'y-or-n-p)
+                      (lambda (&rest _) (error "stop must not confirm"))))
              (with-temp-buffer
                (pi-mode-session-stop)))
            ;; the prompted-for s1 was stopped, not the MRU s2
            (should-not (process-live-p p1))
-           (should (process-live-p p2)))
+           (should (process-live-p p2))
+           (should (pi-mode-session-exit-requested s1))
+           (should-not (pi-mode-session-exit-requested s2)))
        (pi-mode--unregister-session "*pi[sp1]*")
        (pi-mode--unregister-session "*pi[sp2]*")
        (kill-buffer b1) (kill-buffer b2)
        (ignore-errors (delete-process p1))
        (ignore-errors (delete-process p2))))))
+
+(ert-deftest pi-mode-test-session-stop-cleanup ()
+  "stop kills the process; the sentinel cleanup removes the buffer with no
+second confirmation from the kill-buffer guard."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[stc]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[stc]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (pi-mode--attach-sentinel p)
+           (with-current-buffer b
+             (setq-local pi-mode--session s))
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       (pi-mode-confirm-kill t)
+                       ((symbol-function 'y-or-n-p)
+                        (lambda (&rest _) (error "guard must not confirm"))))
+               (pi-mode-session-stop)))
+           ;; process dead, buffer removed by the sentinel cleanup,
+           ;; session unregistered — and no confirmation was asked
+           (should-not (process-live-p p))
+           (should-not (buffer-live-p b))
+           (should-not (pi-mode--session-by-buffer b)))
+       (when (buffer-live-p b) (kill-buffer b))
+       (ignore-errors (delete-process p))))))
+
+(ert-deftest pi-mode-test-session-stop-keeps-buffer-when-kill-buffer-on-exit-nil ()
+  "With `pi-mode-kill-buffer-on-exit' nil, stop leaves the buffer for
+scrollback review; the session is still unregistered."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[stk]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[stk]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-kill-buffer-on-exit nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (pi-mode--attach-sentinel p)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (pi-mode-session-stop)))
+           (should-not (process-live-p p))
+           (should (buffer-live-p b))
+           (should-not (pi-mode--session-by-buffer b)))
+       (when (buffer-live-p b) (kill-buffer b))
+       (ignore-errors (delete-process p))))))
 
 (ert-deftest pi-mode-test-session-rename-intent-prompt ()
   "rename prompts between project sessions and renames the chosen one."
