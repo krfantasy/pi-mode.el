@@ -346,14 +346,25 @@ and re-prompts.  Returns the trimmed name string or nil."
        (t (setq done t))))
     name))
 
+(defun pi-mode--maybe-read-instance-name (root)
+  "Return the instance name for a new session of project ROOT.
+Prompts via `pi-mode--read-instance-name' when ROOT already has live
+sessions, or when a prefix argument is given (so C-u offers the prompt
+for the first instance too); otherwise returns nil and the session is
+auto-named.  Matches cc-ide's trigger in `claude-code-ide--start-session'."
+  (when (or current-prefix-arg (pi-mode--project-sessions root))
+    (pi-mode--read-instance-name root)))
+
 ;;;###autoload
 (defun pi-mode-start ()
   "Start a pi session in the current project.
-With a prefix argument, prompt for an instance name (empty for
-auto-naming) before starting."
+Prompts for an instance name (empty for auto-naming) when the project
+already has running sessions; a prefix argument prompts even for the
+first instance."
   (interactive "P")
-  (let ((name (and current-prefix-arg (pi-mode--read-instance-name))))
-    (pi-mode--launch-buffer (pi-mode--project-root) pi-mode-cli-args name)))
+  (let ((root (pi-mode--project-root)))
+    (pi-mode--launch-buffer root pi-mode-cli-args
+                            (pi-mode--maybe-read-instance-name root))))
 
 ;;; Target resolution
 

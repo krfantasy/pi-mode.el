@@ -323,7 +323,11 @@ hides and restores them."
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (let ((second
                  (cl-letf (((symbol-function 'pi-mode--project-root)
-                            (lambda () project-root)))
+                            (lambda () project-root))
+                           ;; the project already has one instance, so
+                           ;; continue prompts for a name; auto-name it
+                           ((symbol-function 'pi-mode--read-instance-name)
+                            (lambda (&optional _root) nil)))
                    (pi-mode-session-continue))))
             (unwind-protect
                 (progn

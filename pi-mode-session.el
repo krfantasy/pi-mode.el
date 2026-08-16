@@ -51,17 +51,23 @@ after its resolved cwd (on macOS `/var/...' is `/private/var/...')."
 
 ;;;###autoload
 (defun pi-mode-session-continue ()
-  "Start a new pi session continuing the most recent one."
+  "Start a new pi session continuing the most recent one.
+Prompts for an instance name when the project already has running
+sessions, or with a prefix argument."
   (interactive)
-  (pi-mode--launch-buffer (pi-mode--project-root)
-                          (pi-mode--session-command-args "-c")))
+  (let ((root (pi-mode--project-root)))
+    (pi-mode--launch-buffer root (pi-mode--session-command-args "-c")
+                            (pi-mode--maybe-read-instance-name root))))
 
 ;;;###autoload
 (defun pi-mode-session-resume ()
-  "Start pi with the interactive resume picker."
+  "Start pi with the interactive resume picker.
+Prompts for an instance name when the project already has running
+sessions, or with a prefix argument."
   (interactive)
-  (pi-mode--launch-buffer (pi-mode--project-root)
-                          (pi-mode--session-command-args "-r")))
+  (let ((root (pi-mode--project-root)))
+    (pi-mode--launch-buffer root (pi-mode--session-command-args "-r")
+                            (pi-mode--maybe-read-instance-name root))))
 
 ;;;###autoload
 (defun pi-mode-session-fork ()

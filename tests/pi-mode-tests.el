@@ -428,6 +428,40 @@
          (when (process-live-p (pi-mode-session-process session))
            (delete-process (pi-mode-session-process session))))))))
 
+(ert-deftest pi-mode-test-start-prompts-on-second-instance ()
+  "Start without a prefix prompts when the project already has a session."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[first]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[first]*" :buffer b :process p
+                                   :project-root "/tmp/proj/"
+                                   :last-used (current-time)))
+          (prompted nil)
+          (new-session nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+                     ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+                     ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                     ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&optional _root) (setq prompted t) "refactor")))
+             (setq new-session (pi-mode-start)))
+           (should prompted)
+           (should (equal (pi-mode-session-name new-session) "refactor"))
+           (should (equal (buffer-name (pi-mode-session-buffer new-session))
+                          "*pi[proj:refactor]*")))
+       (when new-session
+         (pi-mode--unregister-session (pi-mode-session-id new-session))
+         (when (buffer-live-p (pi-mode-session-buffer new-session))
+           (kill-buffer (pi-mode-session-buffer new-session)))
+         (when (process-live-p (pi-mode-session-process new-session))
+           (delete-process (pi-mode-session-process new-session))))
+       (pi-mode--unregister-session "*pi[first]*")
+       (kill-buffer b)
+       (delete-process p)))))
+
 (ert-deftest pi-mode-test-resolve-session-rules ()
   "Resolution: in-buffer self; sole; mru with echo; C-u prompts; no-ask."
   (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
@@ -801,6 +835,80 @@
            (kill-buffer (pi-mode-session-buffer session)))
          (when (process-live-p (pi-mode-session-process session))
            (delete-process (pi-mode-session-process session))))))))
+
+(ert-deftest pi-mode-test-session-continue-prompts-on-second-instance ()
+  "continue prompts for a name when the project already has a session."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[cfirst]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[cfirst]*" :buffer b :process p
+                                   :project-root "/tmp/proj/"
+                                   :last-used (current-time)))
+          (prompted nil)
+          (new-session nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+                     ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+                     ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                     ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&optional _root) (setq prompted t) "refactor")))
+             (setq new-session (pi-mode-session-continue)))
+           (should prompted)
+           (let ((call (assq 'ghostel-exec pi-mode-test--calls)))
+             (should call)
+             (should (member "-c" (nth 2 (cdr call)))))
+           (should (equal (pi-mode-session-name new-session) "refactor"))
+           (should (equal (buffer-name (pi-mode-session-buffer new-session))
+                          "*pi[proj:refactor]*")))
+       (when new-session
+         (pi-mode--unregister-session (pi-mode-session-id new-session))
+         (when (buffer-live-p (pi-mode-session-buffer new-session))
+           (kill-buffer (pi-mode-session-buffer new-session)))
+         (when (process-live-p (pi-mode-session-process new-session))
+           (delete-process (pi-mode-session-process new-session))))
+       (pi-mode--unregister-session "*pi[cfirst]*")
+       (kill-buffer b)
+       (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-resume-prompts-on-second-instance ()
+  "resume prompts for a name when the project already has a session."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rfirst]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[rfirst]*" :buffer b :process p
+                                   :project-root "/tmp/proj/"
+                                   :last-used (current-time)))
+          (prompted nil)
+          (new-session nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/proj/"))
+                     ((symbol-function 'executable-find) (lambda (_s) "/fake/pi"))
+                     ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                     ((symbol-function 'run-hook-with-args) (lambda (&rest _) nil))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&optional _root) (setq prompted t) "refactor")))
+             (setq new-session (pi-mode-session-resume)))
+           (should prompted)
+           (let ((call (assq 'ghostel-exec pi-mode-test--calls)))
+             (should call)
+             (should (member "-r" (nth 2 (cdr call)))))
+           (should (equal (pi-mode-session-name new-session) "refactor"))
+           (should (equal (buffer-name (pi-mode-session-buffer new-session))
+                          "*pi[proj:refactor]*")))
+       (when new-session
+         (pi-mode--unregister-session (pi-mode-session-id new-session))
+         (when (buffer-live-p (pi-mode-session-buffer new-session))
+           (kill-buffer (pi-mode-session-buffer new-session)))
+         (when (process-live-p (pi-mode-session-process new-session))
+           (delete-process (pi-mode-session-process new-session))))
+       (pi-mode--unregister-session "*pi[rfirst]*")
+       (kill-buffer b)
+       (delete-process p)))))
 
 (ert-deftest pi-mode-test-session-rename-sends ()
   "rename sends /name and updates the struct."
