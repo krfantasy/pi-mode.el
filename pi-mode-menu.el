@@ -67,9 +67,46 @@ window layout (`pi-mode-window-side', `-width', `-height'),
   (customize-save-variable 'pi-mode-cli-args pi-mode-cli-args)
   (pi-mode-log "Configuration saved to custom file"))
 
+(defun pi-mode--set-window-side (side)
+  "Set `pi-mode-window-side' to SIDE (left/right/top/bottom).
+Takes effect on the next display of any pi window; existing windows
+move when displayed again."
+  (interactive (list (intern (completing-read
+                              "Window side: "
+                              '("left" "right" "top" "bottom")
+                              nil t nil nil
+                              (symbol-name pi-mode-window-side)))))
+  (setq pi-mode-window-side side)
+  (pi-mode-log "Window side set to %s" side))
+
+(defun pi-mode--set-window-width (width)
+  "Set `pi-mode-window-width' to WIDTH (body columns)."
+  (interactive (list (read-number "Window width: " pi-mode-window-width)))
+  (setq pi-mode-window-width width)
+  (pi-mode-log "Window width set to %d" width))
+
+(defun pi-mode--set-window-height (height)
+  "Set `pi-mode-window-height' to HEIGHT (text lines)."
+  (interactive (list (read-number "Window height: " pi-mode-window-height)))
+  (setq pi-mode-window-height height)
+  (pi-mode-log "Window height set to %d" height))
+
+(defun pi-mode--toggle-focus-on-open ()
+  "Toggle `pi-mode-focus-on-open'."
+  (interactive)
+  (setq pi-mode-focus-on-open (not pi-mode-focus-on-open))
+  (pi-mode-log "Focus on open %s" (if pi-mode-focus-on-open "enabled" "disabled")))
+
 (transient-define-prefix pi-mode-config-menu ()
   "pi-mode configuration menu."
   [:description "pi-mode Configuration"
+   ["Window"
+    ("s" "Set window side" pi-mode--set-window-side)
+    ("w" "Set window width" pi-mode--set-window-width)
+    ("h" "Set window height" pi-mode--set-window-height)
+    ("f" "Toggle focus on open" pi-mode--toggle-focus-on-open
+     :description (lambda () (format "Focus on open (%s)"
+                                     (if pi-mode-focus-on-open "ON" "OFF"))))]
    ["Configure"
     ("m" "Model" pi-mode-configure-model)
     ("T" "Thinking" pi-mode-configure-thinking)

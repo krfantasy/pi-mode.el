@@ -1569,6 +1569,63 @@ menu has no Status submenu entry, and the config menu saves config."
     (with-current-buffer "*pi-mode-debug*"
       (should (= (buffer-size) 0)))))
 
+;;; Window-layout configuration tests
+
+(ert-deftest pi-mode-test-set-window-side ()
+  "The config-menu side setter reads a side name and applies it."
+  (let ((old pi-mode-window-side))
+    (unwind-protect
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) "top")))
+          (call-interactively 'pi-mode--set-window-side)
+          (should (eq pi-mode-window-side 'top)))
+      (setq pi-mode-window-side old))))
+
+(ert-deftest pi-mode-test-set-window-width ()
+  "The config-menu width setter reads a number and applies it."
+  (let ((old pi-mode-window-width))
+    (unwind-protect
+        (cl-letf (((symbol-function 'read-number) (lambda (&rest _) 77)))
+          (call-interactively 'pi-mode--set-window-width)
+          (should (= pi-mode-window-width 77)))
+      (setq pi-mode-window-width old))))
+
+(ert-deftest pi-mode-test-set-window-height ()
+  "The config-menu height setter reads a number and applies it."
+  (let ((old pi-mode-window-height))
+    (unwind-protect
+        (cl-letf (((symbol-function 'read-number) (lambda (&rest _) 33)))
+          (call-interactively 'pi-mode--set-window-height)
+          (should (= pi-mode-window-height 33)))
+      (setq pi-mode-window-height old))))
+
+(ert-deftest pi-mode-test-toggle-focus-on-open ()
+  "The config-menu focus toggle flips `pi-mode-focus-on-open'."
+  (let ((old pi-mode-focus-on-open))
+    (unwind-protect
+        (progn
+          (setq pi-mode-focus-on-open nil)
+          (pi-mode--toggle-focus-on-open)
+          (should pi-mode-focus-on-open)
+          (pi-mode--toggle-focus-on-open)
+          (should-not pi-mode-focus-on-open))
+      (setq pi-mode-focus-on-open old))))
+
+(ert-deftest pi-mode-test-config-menu-window-entries ()
+  "The config menu exposes the window-layout setters and keeps the rest."
+  (let ((suffixes (pi-mode-test--menu-suffixes 'pi-mode-config-menu)))
+    (should (equal (cdr (assoc "s" suffixes)) 'pi-mode--set-window-side))
+    (should (equal (cdr (assoc "w" suffixes)) 'pi-mode--set-window-width))
+    (should (equal (cdr (assoc "h" suffixes)) 'pi-mode--set-window-height))
+    (should (equal (cdr (assoc "f" suffixes)) 'pi-mode--toggle-focus-on-open))
+    ;; Task 2's Save entry and the pre-existing Configure entries remain
+    (should (equal (cdr (assoc "S" suffixes)) 'pi-mode--save-config))
+    (should (equal (cdr (assoc "m" suffixes)) 'pi-mode-configure-model))
+    (should (equal (cdr (assoc "T" suffixes)) 'pi-mode-configure-thinking))
+    (should (equal (cdr (assoc "u" suffixes)) 'pi-mode-configure-tui-mode))
+    (should (equal (cdr (assoc "x" suffixes)) 'pi-mode-configure-cli-args))
+    (should (equal (cdr (assoc "n" suffixes)) 'pi-mode-toggle-notifications))))
+
 (ert-deftest pi-mode-test-install-keybindings-shim ()
   "The removed keybinding installer is an obsolete no-op compat shim.
 Regression: stale use-package :config blocks calling
