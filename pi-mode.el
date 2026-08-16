@@ -1013,14 +1013,18 @@ state for users without tab-bar-mode."
       "none"))
 
 (defun pi-mode--hidden-panel-get (&optional root)
-  "Hidden session set for the current tab and project, or nil.
-ROOT defaults to the current project (`pi-mode--project-root')."
+  "Hidden session set for the current tab and ROOT, or nil.
+ROOT defaults to the current project (`pi-mode--project-root'); the
+symbol `:all' addresses the whole-tab set used by
+`pi-mode-toggle-recent'."
   (cdr (assoc (cons (pi-mode--current-tab-key) (or root (pi-mode--project-root)))
               (frame-parameter nil 'pi-mode-hidden-panel))))
 
 (defun pi-mode--hidden-panel-set (sessions &optional root)
-  "Remember SESSIONS as the current tab's hidden set for project ROOT.
-ROOT defaults to the current project (`pi-mode--project-root').
+  "Remember SESSIONS as the current tab's hidden set for ROOT.
+ROOT defaults to the current project (`pi-mode--project-root'); the
+symbol `:all' addresses the whole-tab set used by
+`pi-mode-toggle-recent'.
 A nil SESSIONS drops the entry.  Entries for tabs that no longer
 exist are pruned on the way; pruning needs `tab-bar-mode', without
 which every buffer reports a synthetic tab and no real tabs exist.
@@ -1046,6 +1050,17 @@ keying) never match a cons key and are dropped unconditionally."
                              (cons (cons key sessions) rest)
                            rest))))
 
+(defun pi-mode--hide-session-windows (&optional root)
+  "Delete the windows showing pi sessions of project ROOT.
+ROOT nil hides every pi window in the selected frame's tab."
+  (dolist (win (window-list))
+    (let ((session (or (pi-mode--session-by-buffer (window-buffer win))
+                       (buffer-local-value 'pi-mode--session (window-buffer win)))))
+      (when (and session
+                 (or (null root)
+                     (equal (pi-mode-session-project-root session) root)))
+        (ignore-errors (delete-window win))))))
+
 ;;;###autoload
 (defun pi-mode-toggle-panel ()
   "Hide or restore the pi side windows in the current tab.
@@ -1063,14 +1078,7 @@ project's most recently used session."
     (if visible
         (progn
           (pi-mode--hidden-panel-set visible)
-          (dolist (win (window-list))
-            (let ((session (or (pi-mode--session-by-buffer
-                                (window-buffer win))
-                               (buffer-local-value 'pi-mode--session
-                                                   (window-buffer win)))))
-              (when (and session
-                         (equal (pi-mode-session-project-root session) root))
-                (ignore-errors (delete-window win)))))
+          (pi-mode--hide-session-windows root)
           (message "pi panel hidden")
           :hidden)
       (let* ((hidden (pi-mode--hidden-panel-get))
@@ -1123,24 +1131,58 @@ most recently used one for target resolution."
 (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
 
 ;;;###autoload
-(defun pi-mode-show-all ()
-  "Display buffers of all live pi sessions."
-  (interactive)
-  (let ((sessions (pi-mode--active-sessions)))
-    (unless sessions (user-error "No running pi sessions"))
-    (dolist (s sessions)
-      (display-buffer (pi-mode-session-buffer s)))))
+(defun pi-mode-show-all (&optional all-projects)
+  "Show every pi session of the current project.
+Already visible sessions are left in place.  With prefix argument
+ALL-PROJECTS, show the sessions of all projects."
+  (interactive "P")
+  (let* ((root (pi-mode--project-root))
+         (sessions (if all-projects
+                       (pi-mode--active-sessions)
+                     (pi-mode--project-sessions root)))
+         (shown 0))
+    (if (null sessions)
+        (if all-projects
+            (user-error "No running pi sessions")
+          (user-error "No running pi sessions in project %s" root))
+      (dolist (s sessions)
+        (unless (pi-mode--visible-sessions (list s))
+          (display-buffer (pi-mode-session-buffer s))
+          (cl-incf shown)))
+      (message (if (zerop shown)
+                   "All pi sessions already visible"
+                 (format "Showing %d pi session%s"
+                         shown (if (> shown 1) "s" "")))))))
 
 ;;;###autoload
 (defun pi-mode-toggle-recent ()
-  "Display the most recently used pi session."
+  "Toggle the visibility of all pi windows in the current tab.
+When any pi window is visible, hide them all and remember the set
+for this tab; otherwise restore the remembered set (skipping
+stopped sessions), falling back to the most recently used session."
   (interactive)
-  (let ((sessions (pi-mode--active-sessions)))
-    (unless sessions (user-error "No running pi sessions"))
-    (let ((session (pi-mode--mru-session sessions)))
-      ;; last-used is refreshed by the display stamp in
-      ;; `pi-mode--display-buffer', like every other display path
-      (display-buffer (pi-mode-session-buffer session)))))
+  (let* ((all (pi-mode--active-sessions))
+         (visible (pi-mode--visible-sessions all)))
+    (unless all
+      (user-error "No running pi sessions"))
+    (cond
+     (visible
+      (pi-mode--hidden-panel-set visible :all)
+      (pi-mode--hide-session-windows)
+      (message "Closed all pi windows"))
+     ((cl-remove-if-not #'pi-mode--session-live-p
+                        (pi-mode--hidden-panel-get :all))
+      (let ((restore (cl-remove-if-not #'pi-mode--session-live-p
+                                       (pi-mode--hidden-panel-get :all))))
+        (pi-mode--hidden-panel-set nil :all)
+        (dolist (session restore)
+          (display-buffer (pi-mode-session-buffer session)))
+        (message "Restored %d pi window%s"
+                 (length restore) (if (cdr restore) "s" ""))))
+     (t
+      (let ((session (pi-mode--mru-session all)))
+        (display-buffer (pi-mode-session-buffer session))
+        (message "Opened most recent pi session"))))))
 
 (defun pi-mode-show-debug ()
   "Show the pi-mode debug buffer."

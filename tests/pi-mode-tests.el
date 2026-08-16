@@ -2206,6 +2206,285 @@ window-selection hook cannot mask the display stamp under test."
       (pi-mode--unregister-session "*pi[trmru]*")
       (kill-buffer b) (delete-process p))))
 
+(ert-deftest pi-mode-test-toggle-recent-hides-all ()
+  "toggle-recent hides every visible pi window and remembers the set."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[trh1]*"))
+          (b2 (get-buffer-create "*pi[trh2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[trh1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj-a/" :window-slot 0
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[trh2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj-b/" :window-slot 1
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (display-buffer b1)
+           (display-buffer b2)
+           (should (get-buffer-window b1))
+           (should (get-buffer-window b2))
+           (let ((messages nil))
+             (cl-letf (((symbol-function 'message)
+                        (lambda (fmt &rest args)
+                          (push (apply #'format fmt args) messages))))
+               (pi-mode-toggle-recent))
+             (should-not (get-buffer-window b1))
+             (should-not (get-buffer-window b2))
+             (should (equal (pi-mode--hidden-panel-get :all) (list s2 s1)))
+             (should (equal messages '("Closed all pi windows")))))
+       (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+       (pi-mode--unregister-session "*pi[trh1]*")
+       (pi-mode--unregister-session "*pi[trh2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
+
+(ert-deftest pi-mode-test-toggle-recent-restores-set ()
+  "toggle-recent restores the remembered whole-tab set and consumes it."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[trr1]*"))
+          (b2 (get-buffer-create "*pi[trr2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[trr1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj-a/" :window-slot 0
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[trr2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj-b/" :window-slot 1
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (display-buffer b1)
+           (display-buffer b2)
+           (pi-mode-toggle-recent)                 ; hide both, remember set
+           (should-not (get-buffer-window b1))
+           (let ((messages nil))
+             (cl-letf (((symbol-function 'message)
+                        (lambda (fmt &rest args)
+                          (push (apply #'format fmt args) messages))))
+               (pi-mode-toggle-recent))            ; restore the remembered set
+             (should (get-buffer-window b1))
+             (should (get-buffer-window b2))
+             (should-not (pi-mode--hidden-panel-get :all))
+             (should (equal messages '("Restored 2 pi windows")))))
+       (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+       (pi-mode--unregister-session "*pi[trr1]*")
+       (pi-mode--unregister-session "*pi[trr2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
+
+(ert-deftest pi-mode-test-toggle-recent-restore-skips-dead ()
+  "Restore drops dead sessions from the remembered whole-tab set."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[trd1]*"))
+          (b2 (get-buffer-create "*pi[trd2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[trd1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj-a/" :window-slot 0
+                                    :last-used (current-time)))
+          (s2 (make-pi-mode-session :id "*pi[trd2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj-b/" :window-slot 1
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (delete-process p2)                     ; s2 dies while hidden
+           (pi-mode--hidden-panel-set (list s2 s1) :all)
+           (let ((messages nil))
+             (cl-letf (((symbol-function 'message)
+                        (lambda (fmt &rest args)
+                          (push (apply #'format fmt args) messages))))
+               (pi-mode-toggle-recent)
+               (should (get-buffer-window b1))     ; live session restored
+               (should-not (get-buffer-window b2)) ; dead session skipped
+               (should-not (pi-mode--hidden-panel-get :all))
+               (should (equal messages '("Restored 1 pi window"))))))
+       (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+       (pi-mode--unregister-session "*pi[trd1]*")
+       (pi-mode--unregister-session "*pi[trd2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (ignore-errors (delete-process p1))
+       (ignore-errors (delete-process p2))))))
+
+(ert-deftest pi-mode-test-toggle-recent-mru-fallback ()
+  "With nothing visible and no remembered set, toggle-recent shows the MRU."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b (get-buffer-create "*pi[trm]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[trm]*" :buffer b :process p
+                                   :project-root "/tmp/"
+                                   :last-used (time-subtract (current-time) 5))))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+           (pi-mode--register-session s)
+           (with-current-buffer b (setq-local pi-mode--session s))
+           (let ((messages nil))
+             (cl-letf (((symbol-function 'message)
+                        (lambda (fmt &rest args)
+                          (push (apply #'format fmt args) messages))))
+               (pi-mode-toggle-recent)
+               (should (get-buffer-window b))
+               (should (equal messages '("Opened most recent pi session"))))))
+       (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+       (pi-mode--unregister-session "*pi[trm]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-show-all-project-scoped ()
+  "show-all displays the current project's hidden sessions only."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[sa1]*"))
+          (b2 (get-buffer-create "*pi[sa2]*"))
+          (b3 (get-buffer-create "*pi[sa3]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (p3 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[sa1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj/" :window-slot 0
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[sa2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj/" :window-slot 1
+                                    :last-used (current-time)))
+          (s3 (make-pi-mode-session :id "*pi[sa3]*" :buffer b3 :process p3
+                                    :project-root "/tmp/other/" :window-slot 2
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (pi-mode--register-session s3)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (with-current-buffer b3 (setq-local pi-mode--session s3))
+           (display-buffer b1)                     ; s1 already visible
+           (should (get-buffer-window b1))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/")))
+             (let ((messages nil))
+               (cl-letf (((symbol-function 'message)
+                          (lambda (fmt &rest args)
+                            (push (apply #'format fmt args) messages))))
+                 (pi-mode-show-all)
+                 (should (get-buffer-window b2))   ; project hidden session shown
+                 (should (get-buffer-window b1))   ; visible one left in place
+                 (should-not (get-buffer-window b3)) ; foreign project untouched
+                 (should (equal messages '("Showing 1 pi session")))))))
+       (pi-mode--unregister-session "*pi[sa1]*")
+       (pi-mode--unregister-session "*pi[sa2]*")
+       (pi-mode--unregister-session "*pi[sa3]*")
+       (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
+       (delete-process p1) (delete-process p2) (delete-process p3)))))
+
+(ert-deftest pi-mode-test-show-all-all-projects-prefix ()
+  "With a prefix argument show-all displays every project's hidden sessions."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[saap1]*"))
+          (b2 (get-buffer-create "*pi[saap2]*"))
+          (b3 (get-buffer-create "*pi[saap3]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (p3 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[saap1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj/" :window-slot 0
+                                    :last-used (time-subtract (current-time) 20)))
+          (s2 (make-pi-mode-session :id "*pi[saap2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj/" :window-slot 1
+                                    :last-used (time-subtract (current-time) 10)))
+          (s3 (make-pi-mode-session :id "*pi[saap3]*" :buffer b3 :process p3
+                                    :project-root "/tmp/other/" :window-slot 2
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (pi-mode--register-session s3)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (with-current-buffer b3 (setq-local pi-mode--session s3))
+           (display-buffer b1)                     ; s1 already visible
+           (should (get-buffer-window b1))
+           (let ((messages nil))
+             (cl-letf (((symbol-function 'message)
+                        (lambda (fmt &rest args)
+                          (push (apply #'format fmt args) messages))))
+               (let ((current-prefix-arg '(4)))
+                 (call-interactively #'pi-mode-show-all))
+               (should (get-buffer-window b2))     ; project hidden session shown
+               (should (get-buffer-window b3))     ; other project's shown too
+               (should (get-buffer-window b1))
+               (should (equal messages '("Showing 2 pi sessions"))))))
+       (pi-mode--unregister-session "*pi[saap1]*")
+       (pi-mode--unregister-session "*pi[saap2]*")
+       (pi-mode--unregister-session "*pi[saap3]*")
+       (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
+       (delete-process p1) (delete-process p2) (delete-process p3)))))
+
+(ert-deftest pi-mode-test-show-all-already-visible ()
+  "show-all reports when every project session is already visible."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[sav1]*"))
+          (b2 (get-buffer-create "*pi[sav2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[sav1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj/" :window-slot 0
+                                    :last-used (time-subtract (current-time) 10)))
+          (s2 (make-pi-mode-session :id "*pi[sav2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj/" :window-slot 1
+                                    :last-used (current-time)))
+          (window-sides-slots '(nil nil 4 nil)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (display-buffer b1)
+           (display-buffer b2)
+           (should (get-buffer-window b1))
+           (should (get-buffer-window b2))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/")))
+             (let ((messages nil))
+               (cl-letf (((symbol-function 'message)
+                          (lambda (fmt &rest args)
+                            (push (apply #'format fmt args) messages))))
+                 (pi-mode-show-all)
+                 (should (equal messages '("All pi sessions already visible")))
+                 (should (get-buffer-window b1))
+                 (should (get-buffer-window b2))))))
+       (pi-mode--unregister-session "*pi[sav1]*")
+       (pi-mode--unregister-session "*pi[sav2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
 (ert-deftest pi-mode-test-hidden-panel-set-get ()
   "Hidden sets are stored per (tab × project) key; nil drops the entry."
   (unwind-protect
