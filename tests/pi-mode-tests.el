@@ -785,6 +785,85 @@
 
 
 
+(ert-deftest pi-mode-test-send-prompt-sends ()
+  "send-prompt sends the typed prompt and Return to the target session."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[sp]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[sp]*" :buffer b :process p
+                                   :project-root "/tmp/proj/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'read-string)
+                      (lambda (&rest _) "hello pi"))
+                     ((symbol-function 'sit-for)
+                      (lambda (&rest _) nil)))
+             (pi-mode-send-prompt))
+           (should (equal (cdr (assq 'ghostel-send-string pi-mode-test--calls))
+                          '("hello pi")))
+           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                          '("return")))
+           ;; text first, then Return; the calls alist is pushed, so the
+           ;; recorded order is reversed
+           (should (equal (mapcar #'car pi-mode-test--calls)
+                          '(ghostel-send-key ghostel-send-string))))
+       (pi-mode--unregister-session "*pi[sp]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-send-prompt-empty-noop ()
+  "send-prompt with blank input sends nothing."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[sp2]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[sp2]*" :buffer b :process p
+                                   :project-root "/tmp/proj/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'read-string)
+                      (lambda (&rest _) "   "))
+                     ((symbol-function 'sit-for)
+                      (lambda (&rest _) nil)))
+             (pi-mode-send-prompt))
+           (should-not (assq 'ghostel-send-string pi-mode-test--calls))
+           (should-not (assq 'ghostel-send-key pi-mode-test--calls)))
+       (pi-mode--unregister-session "*pi[sp2]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-insert-newline-sends-backslash-return ()
+  "insert-newline sends backslash then Return to the target session."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[nl]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[nl]*" :buffer b :process p
+                                   :project-root "/tmp/proj/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'sit-for)
+                      (lambda (&rest _) nil)))
+             (pi-mode-insert-newline))
+           (should (equal (cdr (assq 'ghostel-send-string pi-mode-test--calls))
+                          '("\\")))
+           (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                          '("return")))
+           (should (equal (mapcar #'car pi-mode-test--calls)
+                          '(ghostel-send-key ghostel-send-string))))
+       (pi-mode--unregister-session "*pi[nl]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-insert-newline-bound-s-shift-return ()
+  "S-<return> is bound to pi-mode-insert-newline in session buffers."
+  (should (eq (lookup-key pi-mode-map (kbd "S-<return>"))
+              #'pi-mode-insert-newline)))
+
 (ert-deftest pi-mode-test-send-region-inserts-raw-content ()
   "send-region pastes the raw region content: no minibuffer prompt, no submit."
   (pi-mode-test-with-mock-ghostel
@@ -1400,6 +1479,20 @@ scrollback review; the session is still unregistered."
        (kill-buffer b1) (kill-buffer b2)
        (delete-process p1) (delete-process p2)))))
 
+(defun pi-mode-test--menu-suffixes (menu)
+  "Return ((KEY . COMMAND) ...) for every suffix of transient MENU.
+Walks the parsed layout (version-2 vector form): group vectors carry
+their children at index 2; suffixes are plists with :key and :command."
+  (let* ((transient--prefix (get menu 'transient--prefix))
+         (layout (transient--get-layout menu)))
+    (cl-labels ((walk (children)
+                  (cl-loop for c in children
+                           append (if (vectorp c)
+                                      (walk (aref c 2))
+                                    (list (cons (plist-get (cdr c) :key)
+                                                (plist-get (cdr c) :command)))))))
+      (walk (aref layout 2)))))
+
 (ert-deftest pi-mode-test-menu-defined ()
   "The transient menu and its suffix commands exist."
   (should (commandp 'pi-mode-menu))
@@ -1422,6 +1515,14 @@ scrollback review; the session is still unregistered."
                  pi-mode-configure-cli-args
                  pi-mode-toggle-notifications))
     (should (commandp cmd))))
+
+(ert-deftest pi-mode-test-menu-has-send-commands ()
+  "The Interaction column binds p to send-prompt and n to insert-newline."
+  (should (commandp 'pi-mode-send-prompt))
+  (should (commandp 'pi-mode-insert-newline))
+  (let ((suffixes (pi-mode-test--menu-suffixes 'pi-mode-menu)))
+    (should (equal (cdr (assoc "p" suffixes)) 'pi-mode-send-prompt))
+    (should (equal (cdr (assoc "n" suffixes)) 'pi-mode-insert-newline))))
 
 (ert-deftest pi-mode-test-install-keybindings-shim ()
   "The removed keybinding installer is an obsolete no-op compat shim.

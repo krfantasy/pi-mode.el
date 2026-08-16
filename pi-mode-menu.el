@@ -43,6 +43,8 @@ navigation b/w/W/a, interaction i/f/e, submenus C/d/S."
     ("a" "Show all" pi-mode-show-all)]
    ["Interaction"
     ("i" "Insert region" pi-mode-send-region)
+    ("p" "Send prompt" pi-mode-send-prompt)
+    ("n" "Insert newline" pi-mode-insert-newline)
     ("f" "Insert file ref" pi-mode-send-file)
     ("E" "Edit prompt" pi-mode-edit-prompt)
     ("e" "Interrupt" pi-mode-interrupt)]

@@ -484,6 +484,43 @@ to send it."
 
 (define-key pi-mode-map (kbd "C-<escape>") #'pi-mode-interrupt)
 (define-key pi-mode-map (kbd "C-c C-i") #'pi-mode-edit-prompt)
+(define-key pi-mode-map (kbd "S-<return>") #'pi-mode-insert-newline)
+
+;;; Prompt sending
+
+;;;###autoload
+(defun pi-mode-send-prompt ()
+  "Send a prompt typed in the minibuffer to the target pi session.
+The text is sent like typed input — the string followed by Return —
+so multi-line prompts and commands work.  Blank input sends nothing.
+The target is resolved like `pi-mode-interrupt' (prefix argument
+prompts)."
+  (interactive)
+  (let* ((session (pi-mode--resolve-session current-prefix-arg))
+         (prompt (read-string "pi prompt: ")))
+    (when (not (string-empty-p (string-trim prompt)))
+      (with-current-buffer (pi-mode-session-buffer session)
+        (ghostel-send-string prompt)
+        ;; Let the TUI process the text before Return (cc-ide parity,
+        ;; claude-code-ide.el:1750).
+        (sit-for 0.1)
+        (ghostel-send-key "return"))
+      (pi-mode-log "sent prompt %S" (substring prompt 0 (min 80 (length prompt)))))))
+
+;;;###autoload
+(defun pi-mode-insert-newline ()
+  "Insert a newline in the target pi session's prompt input.
+Sends a backslash followed by Return — pi's multiline-input idiom —
+so the prompt stays open on a new line instead of submitting."
+  (interactive)
+  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+    (with-current-buffer (pi-mode-session-buffer session)
+      (ghostel-send-string "\\")
+      ;; Let the TUI process the backslash before Return (cc-ide
+      ;; parity, claude-code-ide.el:1717-1718).
+      (sit-for 0.1)
+      (ghostel-send-key "return"))
+    (pi-mode-log "newline inserted")))
 
 ;;; Prompt editing
 
