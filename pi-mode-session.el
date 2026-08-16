@@ -81,17 +81,40 @@ sessions, or with a prefix argument."
       (pi-mode--launch-buffer root (append pi-mode-cli-args (list "--fork" file))))))
 
 ;;;###autoload
-(defun pi-mode-session-rename (name)
-  "Rename the target session to NAME (sends /name to pi)."
-  (interactive
-   (list (read-from-minibuffer "Session name: ")))
-  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
-    (when (and name (> (length name) 0))
+(defun pi-mode-session-rename ()
+  "Rename the target session, validating the name and renaming the buffer.
+The new name is read with `pi-mode--read-instance-name': pure-numeric
+names and names containing `[', `]', `*', or control characters are
+rejected, as are names already used by another live session of the
+project; the old name prefills the prompt and empty input auto-names
+(the session becomes unnamed).  Sends /name to pi and renames the
+terminal buffer so the buffer name and the display name stay in sync."
+  (interactive)
+  (let* ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt))
+         (root (pi-mode-session-project-root session))
+         (old-name (pi-mode-session-name session))
+         (new-name (pi-mode--read-instance-name
+                    root
+                    (format "Rename %s to (empty for auto): "
+                            (or old-name (pi-mode-session-id session)))
+                    session)))
+    (when new-name
       (with-current-buffer (pi-mode-session-buffer session)
-        (ghostel-send-string (format "/name %s" name))
-        (ghostel-send-key "return"))
-      (setf (pi-mode-session-name session) name)
-      (pi-mode-log "renamed session to %s" name))))
+        (ghostel-send-string (format "/name %s" new-name))
+        (ghostel-send-key "return")))
+    (setf (pi-mode-session-name session) new-name)
+    ;; Rename the terminal buffer and re-key the registry, preserving the
+    ;; id = buffer-name invariant `pi-mode--session-by-buffer' relies on.
+    (let ((new-buffer-name
+           (pi-mode--unique-buffer-name
+            (pi-mode--session-base-name root new-name)
+            (pi-mode-session-buffer session))))
+      (pi-mode--unregister-session (pi-mode-session-id session))
+      (setf (pi-mode-session-id session) new-buffer-name)
+      (with-current-buffer (pi-mode-session-buffer session)
+        (rename-buffer new-buffer-name))
+      (pi-mode--register-session session))
+    (pi-mode-log "renamed session to %s" (or new-name "auto"))))
 
 ;;;###autoload
 (defun pi-mode-session-stop ()

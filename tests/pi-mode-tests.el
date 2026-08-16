@@ -911,7 +911,7 @@
        (delete-process p)))))
 
 (ert-deftest pi-mode-test-session-rename-sends ()
-  "rename sends /name and updates the struct."
+  "rename sends /name, renames the terminal buffer and re-keys the registry."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[rn]*"))
           (p (pi-mode-test--fake-process))
@@ -921,15 +921,161 @@
          (progn
            (pi-mode--register-session s)
            (cl-letf (((symbol-function 'pi-mode--project-root)
-                      (lambda () "/tmp/")))
+                      (lambda () "/tmp/"))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&rest _) "refactor")))
              (with-current-buffer b
-               (pi-mode-session-rename "refactor")))
+               (pi-mode-session-rename)))
            (should (equal (pi-mode-session-name s) "refactor"))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
-             (should (equal (car (cdr call)) "/name refactor"))))
-       (pi-mode--unregister-session "*pi[rn]*")
+             (should (equal (car (cdr call)) "/name refactor")))
+           ;; buffer name and display name stay in sync; the registry is
+           ;; re-keyed so the id = buffer-name invariant holds.
+           (should (equal (buffer-name b) "*pi[tmp:refactor]*"))
+           (should (equal (pi-mode-session-id s) "*pi[tmp:refactor]*"))
+           (should (eq (pi-mode--session-by-buffer b) s))
+           (should-not (gethash "*pi[rn]*" pi-mode--sessions)))
+       (pi-mode--unregister-session (pi-mode-session-id s))
        (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-rename-empty-auto ()
+  "Empty rename input auto-names: no /name sent, buffer renamed to the base."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rn2]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[rn2]*" :buffer b :process p
+                                   :project-root "/tmp/proj/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&rest _) nil)))
+             (with-current-buffer b
+               (pi-mode-session-rename)))
+           (should-not (pi-mode-session-name s))
+           (should-not (assq 'ghostel-send-string pi-mode-test--calls))
+           (should (equal (buffer-name b) "*pi[proj]*"))
+           (should (equal (pi-mode-session-id s) "*pi[proj]*"))
+           (should (eq (pi-mode--session-by-buffer b) s)))
+       (pi-mode--unregister-session (pi-mode-session-id s))
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-rename-auto-keeps-base-name ()
+  "Renaming an auto-named session to empty keeps its base buffer name."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((s (pi-mode--make-session "/tmp/proj/"))
+          (p (pi-mode-test--fake-process))
+          (b (pi-mode-session-buffer s)))
+     (setf (pi-mode-session-process s) p)
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (should (equal (buffer-name b) "*pi[proj]*"))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&rest _) nil)))
+             (with-current-buffer b
+               (pi-mode-session-rename)))
+           (should-not (pi-mode-session-name s))
+           (should (equal (buffer-name b) "*pi[proj]*"))
+           (should (eq (pi-mode--session-by-buffer b) s)))
+       (pi-mode--unregister-session (pi-mode-session-id s))
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-rename-rejects-duplicate-name ()
+  "rename rejects a name another live session uses and re-prompts."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[rd1]*"))
+          (b2 (get-buffer-create "*pi[rd2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[rd1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj/"))
+          (s2 (make-pi-mode-session :id "*pi[rd2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj/"
+                                    :name "refactor"))
+          (answers '("refactor" "other")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'read-string)
+                      (lambda (&rest _) (pop answers))))
+             (with-current-buffer b1
+               (pi-mode-session-rename)))
+           ;; "refactor" was rejected (s2 holds it), "other" accepted
+           (should-not answers)
+           (should (equal (pi-mode-session-name s1) "other"))
+           (should (equal (buffer-name b1) "*pi[proj:other]*"))
+           (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
+             (should call)
+             (should (equal (car (cdr call)) "/name other"))))
+       (pi-mode--unregister-session (pi-mode-session-id s1))
+       (pi-mode--unregister-session "*pi[rd2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
+
+(ert-deftest pi-mode-test-session-rename-allows-own-name ()
+  "rename to the session's own name is allowed (no rejection loop)."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((s (pi-mode--make-session "/tmp/proj/" "refactor"))
+          (p (pi-mode-test--fake-process))
+          (b (pi-mode-session-buffer s))
+          (reads 0))
+     (setf (pi-mode-session-process s) p)
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'read-string)
+                      (lambda (&rest _) (setq reads (1+ reads)) "refactor")))
+             (with-current-buffer b
+               (pi-mode-session-rename)))
+           ;; one read only: the session's own name is not a duplicate
+           (should (= reads 1))
+           (should (equal (pi-mode-session-name s) "refactor"))
+           (should (equal (buffer-name b) "*pi[proj:refactor]*"))
+           (should (eq (pi-mode--session-by-buffer b) s)))
+       (pi-mode--unregister-session (pi-mode-session-id s))
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-session-rename-uniquifies ()
+  "Renaming to a base another live session holds gets <N>."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((s1 (pi-mode--make-session "/tmp/proj/"))
+          (p1 (pi-mode-test--fake-process))
+          (b1 (pi-mode-session-buffer s1))
+          (s2 (pi-mode--make-session "/tmp/proj/" "refactor"))
+          (p2 (pi-mode-test--fake-process))
+          (b2 (pi-mode-session-buffer s2)))
+     (setf (pi-mode-session-process s1) p1
+           (pi-mode-session-process s2) p2)
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj/"))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&rest _) nil)))
+             (with-current-buffer b2
+               (pi-mode-session-rename)))
+           ;; the auto base *pi[proj]* is taken by s1 -> <2>
+           (should (equal (buffer-name b2) "*pi[proj]*<2>"))
+           (should (equal (pi-mode-session-id s2) "*pi[proj]*<2>"))
+           (should (eq (pi-mode--session-by-buffer b2) s2))
+           (should (eq (pi-mode--session-by-buffer b1) s1)))
+       (pi-mode--unregister-session (pi-mode-session-id s1))
+       (pi-mode--unregister-session (pi-mode-session-id s2))
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
 
 (ert-deftest pi-mode-test-session-stop-prompts ()
   "stop requires confirmation then deletes the process."
@@ -1015,16 +1161,21 @@
            (cl-letf (((symbol-function 'pi-mode--project-root)
                       (lambda () "/tmp/"))
                      ((symbol-function 'completing-read)
-                      (lambda (&rest _) "*pi[rp1]*")))
+                      (lambda (&rest _) "*pi[rp1]*"))
+                     ((symbol-function 'pi-mode--read-instance-name)
+                      (lambda (&rest _) "refactor")))
              (with-temp-buffer
-               (pi-mode-session-rename "refactor")))
+               (pi-mode-session-rename)))
            ;; the prompted-for s1 was renamed, not the MRU s2
            (should (equal (pi-mode-session-name s1) "refactor"))
            (should-not (pi-mode-session-name s2))
+           (should (equal (buffer-name b1) "*pi[tmp:refactor]*"))
+           (should (eq (pi-mode--session-by-buffer b1) s1))
+           (should-not (gethash "*pi[rp1]*" pi-mode--sessions))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
              (should (equal (car (cdr call)) "/name refactor"))))
-       (pi-mode--unregister-session "*pi[rp1]*")
+       (pi-mode--unregister-session (pi-mode-session-id s1))
        (pi-mode--unregister-session "*pi[rp2]*")
        (kill-buffer b1) (kill-buffer b2)
        (delete-process p1) (delete-process p2)))))

@@ -192,10 +192,13 @@ Reuses the live filter and sort of `pi-mode--active-sessions'."
 
 ;;; Lifecycle
 
-(defun pi-mode--unique-buffer-name (base)
-  "Return BASE, or BASE<N> for the first N that is not in use."
+(defun pi-mode--unique-buffer-name (base &optional except)
+  "Return BASE, or BASE<N> for the first N that is not in use.
+EXCEPT, when a buffer, is not considered in use — the session's own
+buffer when re-deriving its name during rename."
   (let ((name base) (n 2))
-    (while (get-buffer name)
+    (while (let ((buf (get-buffer name)))
+             (and buf (not (eq buf except))))
       (setq name (format "%s<%d>" base n)
             n (1+ n)))
     name))
@@ -316,9 +319,12 @@ launch fails the scratch buffer is removed."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
-(defun pi-mode--read-instance-name (&optional root)
+(defun pi-mode--read-instance-name (&optional root prompt exclude-session)
   "Read and validate an instance name for project ROOT.
 ROOT defaults to the current project (`pi-mode--project-root').
+PROMPT overrides the prompt string.  EXCLUDE-SESSION (a session
+struct) is ignored in the duplicate check, so a session can keep its
+own name when renamed.
 Empty input returns nil (auto-named).  Pure-numeric names are
 rejected (reserved for auto-numbering), as are names containing
 `[', `]', `*', or control characters, and names already used by a
@@ -328,7 +334,7 @@ and re-prompts.  Returns the trimmed name string or nil."
         name done)
     (while (not done)
       (setq name (string-trim
-                  (read-string "Instance name (empty for auto): ")))
+                  (read-string (or prompt "Instance name (empty for auto): "))))
       (cond
        ((string-empty-p name)
         (setq name nil done t))
@@ -339,7 +345,8 @@ and re-prompts.  Returns the trimmed name string or nil."
         (message "Name cannot contain [, ], or *")
         (sit-for 1))
        ((cl-some (lambda (session)
-                   (equal name (pi-mode-session-name session)))
+                   (and (not (eq session exclude-session))
+                        (equal name (pi-mode-session-name session))))
                  (pi-mode--project-sessions root))
         (message "Name already used in this project: %s" name)
         (sit-for 1))
