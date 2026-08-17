@@ -62,24 +62,26 @@
   nil)
 
 (defun pi-mode-testcover--run-tests ()
-  "Run ERT and return (KNOWN UNEXPECTED)."
+  "Run ERT and return (KNOWN UNEXPECTED ABORTED).
+UNEXPECTED counts only unexpected test results; ABORTED records an
+incomplete ERT run separately."
   (let ((stats (ert-run-tests t #'pi-mode-testcover--silent-listener))
         (known 0)
         (unexpected 0))
     (dotimes (index (ert-stats-total stats))
       (let* ((test (aref (ert--stats-tests stats) index))
              (result (aref (ert--stats-test-results stats) index)))
-        (unless (ert-test-result-expected-p test result)
+        (when (and result
+                   (not (ert-test-result-expected-p test result)))
           (if (pi-mode-testcover--known-artifact-p test result)
               (cl-incf known)
             (cl-incf unexpected)
             (princ (format "COVERAGE unexpected-test=%s\n"
                            (ert-test-name test)))))))
-    (when (ert--stats-aborted-p stats)
-      (cl-incf unexpected))
-    (princ (format "COVERAGE tests=%d known-artifacts=%d unexpected=%d\n"
-                   (ert-stats-total stats) known unexpected))
-    (list known unexpected)))
+    (let ((aborted (if (ert--stats-aborted-p stats) 1 0)))
+      (princ (format "COVERAGE tests=%d known-artifacts=%d unexpected=%d aborted=%d\n"
+                     (ert-stats-total stats) known unexpected aborted))
+      (list known unexpected aborted))))
 
 (defun pi-mode-testcover--forms-in (form-data)
   "Return the number of instrumented forms described by FORM-DATA."
@@ -135,12 +137,13 @@ Return the aggregate coverage percentage."
   ;; normal batch scratch buffer as the previous buffer for window fallback
   ;; tests that exercise `switch-to-prev-buffer'.
   (switch-to-buffer (get-buffer-create "*scratch*"))
-  (pcase-let ((`(,known ,unexpected)
+  (pcase-let ((`(,known ,unexpected ,aborted)
                (pi-mode-testcover--run-tests)))
     (let ((percent (pi-mode-testcover--report instrumented)))
       ;; Keep the initial threshold report-only while the two known artifacts
       ;; remain.  Enforce it automatically once those artifacts disappear.
       (let ((status (if (or (> unexpected 0)
+                            (> aborted 0)
                             (and (zerop known) (< percent 80.0)))
                         1
                       0)))

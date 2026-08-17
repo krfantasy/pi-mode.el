@@ -233,7 +233,8 @@ completions and resumed sessions behave correctly."
                         (pi-mode--session-dir
                          (pi-mode-session-project-root s)))
                       (pi-mode--active-sessions))))
-    (maphash (lambda (file _state)
+    (maphash (lambda (file value)
+               (ignore value)
                (unless (cl-loop for dir in dirs
                                 thereis (file-in-directory-p file dir))
                  (remhash file pi-mode-notifications--state)))
