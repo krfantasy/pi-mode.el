@@ -150,7 +150,7 @@ tears down."
   (pi-mode-e2e-server-start)
   (let ((project-root (make-temp-file "pi-e2e-proj-" t)))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (process-live-p process))
           (should (eq (pi-mode--session-by-buffer buffer) session))
           ;; The session buffer owns the project root (cwd regression).
@@ -225,7 +225,7 @@ e2e model endpoint and records the round in the session JSONL."
         (progn
           (make-directory (file-name-directory file) t)
           (write-region "content" nil file)
-          (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+          (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
             (should (pi-mode-e2e--wait-ready process buffer project-root))
             (with-temp-buffer
               (setq buffer-file-name file)
@@ -239,7 +239,7 @@ e2e model endpoint and records the round in the session JSONL."
   (pi-mode-e2e-server-start)
   (let ((project-root (make-temp-file "pi-e2e-proj-" t)))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (pi-mode-interrupt)
           (should (process-live-p process))
@@ -255,7 +255,7 @@ e2e model endpoint and records the round in the session JSONL."
   (pi-mode-e2e-server-start)
   (let ((project-root (make-temp-file "pi-e2e-proj-" t)))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (with-current-buffer buffer
             (ghostel-send-key "d" "ctrl"))
@@ -277,7 +277,7 @@ hides and restores them."
   (pi-mode-e2e-server-start)
   (let ((project-root (make-temp-file "pi-e2e-proj-" t)))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (let ((win (get-buffer-window buffer)))
             (should win)
@@ -300,7 +300,7 @@ hides and restores them."
   (let ((project-root (make-temp-file "pi-e2e-proj-" t))
         (bogus "e2e-no-such-model"))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (pi-mode-configure-model bogus)
           ;; Real pi processes the /model command and renders feedback
@@ -319,7 +319,7 @@ hides and restores them."
   (pi-mode-e2e-server-start)
   (let ((project-root (make-temp-file "pi-e2e-proj-" t)))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (let ((second
                  (cl-letf (((symbol-function 'pi-mode--project-root)
@@ -429,7 +429,7 @@ keeps the original prompt."
   (let ((project-root (make-temp-file "pi-e2e-proj-" t))
         (marker "e2e-edit-cancel-marker"))
     (unwind-protect
-        (pi-mode-e2e--with-session (session buffer process agent-dir) project-root
+        (pi-mode-e2e--with-session (session buffer process _agent-dir) project-root
           (should (pi-mode-e2e--wait-ready process buffer project-root))
           (with-temp-buffer
             (insert marker)

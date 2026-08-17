@@ -28,7 +28,6 @@ compile-tests:
 		--eval '(package-initialize)' \
 		--eval '(setq load-prefer-newer t)' \
 		--eval '(setq byte-compile-error-on-warn t)' \
-		--eval '(setq byte-compile-warnings (quote (not lexical obsolete)))' \
 		-L tests/stubs -L . -L tests -L tests/e2e \
 		-f batch-byte-compile \
 		tests/pi-mode-tests.el \

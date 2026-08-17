@@ -700,7 +700,7 @@ wrong-number-of-arguments."
           (pi-mode--register-session s2)
           (display-buffer b2)          ; s2 is visible
           (cl-letf (((symbol-function 'completing-read)
-                     (lambda (prompt collection &rest _)
+                     (lambda (_prompt collection &rest _)
                        (setq captured collection)
                        (car (rassq s1 collection)))))
             (should (eq (pi-mode--prompt-session (list s1 s2)) s1)))
@@ -2082,7 +2082,7 @@ Regression: stale use-package :config blocks calling
   (should (get 'pi-mode-install-keybindings 'byte-obsolete-info))
   ;; The shim must return without signaling.
   (should (condition-case nil
-              (progn (pi-mode-install-keybindings t) t)
+              (progn (funcall (intern "pi-mode-install-keybindings") t) t)
             (error nil))))
 
 (ert-deftest pi-mode-test-global-menu-binding ()
@@ -3868,7 +3868,7 @@ non-nil, and leaves focus alone when it is nil."
       (insert (json-encode entry) "\n"))
     (write-region (point-min) (point-max) file append)))
 
-(defun pi-mode-test--notif-session (name dir)
+(defun pi-mode-test--notif-session (name _dir)
   "Register a fake session whose session dir is DIR; return the session."
   (let* ((id (format "*pi[%s]*" name))
          (b (get-buffer-create id))
