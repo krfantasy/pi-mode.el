@@ -1167,6 +1167,97 @@ wrong-number-of-arguments."
             (should (= (length (pi-mode--session-files "/tmp/x")) 2))))
       (delete-directory dir t))))
 
+(ert-deftest pi-mode-test-session-fork-launches-selected-file ()
+  "Fork launches a selected past-session file with the configured args."
+  (let* ((root "/tmp/proj/")
+         (selected-file (make-temp-file "pi-fork-" nil ".jsonl"))
+         (launch-root nil)
+         (launch-args nil))
+    (unwind-protect
+        (pi-mode-test-with-mock-ghostel
+         (let ((pi-mode-cli-args '("--tui-mode" "regular")))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () root))
+                     ((symbol-function 'pi-mode--session-files)
+                      (lambda (_root) (list selected-file)))
+                     ((symbol-function 'completing-read)
+                      (lambda (&rest _) selected-file))
+                     ((symbol-function 'pi-mode--launch-buffer)
+                      (lambda (actual-root args &rest _)
+                        (setq launch-root actual-root
+                              launch-args args))))
+             (pi-mode-session-fork))
+           (should (equal launch-root root))
+           (should (equal launch-args
+                          (append pi-mode-cli-args
+                                  (list "--fork" selected-file))))))
+      (delete-file selected-file))))
+
+(ert-deftest pi-mode-test-session-fork-errors-without-past-sessions ()
+  "Fork signals a user error and does not launch without session history."
+  (let ((launch-called nil))
+    (pi-mode-test-with-mock-ghostel
+     (cl-letf (((symbol-function 'pi-mode--project-root)
+                (lambda () "/tmp/proj/"))
+               ((symbol-function 'pi-mode--session-files)
+                (lambda (_root) nil))
+               ((symbol-function 'pi-mode--launch-buffer)
+                (lambda (&rest _) (setq launch-called t))))
+       (should-error (pi-mode-session-fork) :type 'user-error))
+     (should-not launch-called))))
+
+(ert-deftest pi-mode-test-list-sessions-errors-without-live-sessions ()
+  "List sessions signals a user error when the registry is empty."
+  (pi-mode-test-with-mock-ghostel
+   (clrhash pi-mode--sessions)
+   (should-error (pi-mode-list-sessions) :type 'user-error)))
+
+(ert-deftest pi-mode-test-list-sessions-switches-selected-session ()
+  "List sessions switches to the session returned by the prompt."
+  (let* ((b1 (get-buffer-create "*pi[list-one]*"))
+         (b2 (get-buffer-create "*pi[list-two]*"))
+         (p1 (pi-mode-test--fake-process))
+         (p2 (pi-mode-test--fake-process))
+         (s1 (make-pi-mode-session :id "*pi[list-one]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj/"))
+         (s2 (make-pi-mode-session :id "*pi[list-two]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj/"))
+         (selected-buffer nil))
+    (unwind-protect
+        (pi-mode-test-with-mock-ghostel
+         (pi-mode--register-session s1)
+         (pi-mode--register-session s2)
+         (cl-letf (((symbol-function 'pi-mode--prompt-session)
+                    (lambda (_sessions) s2))
+                   ((symbol-function 'switch-to-buffer)
+                    (lambda (buffer) (setq selected-buffer buffer))))
+           (pi-mode-list-sessions))
+         (should (eq selected-buffer b2)))
+      (pi-mode--unregister-session (pi-mode-session-id s1))
+      (pi-mode--unregister-session (pi-mode-session-id s2))
+      (kill-buffer b1)
+      (kill-buffer b2)
+      (delete-process p1)
+      (delete-process p2))))
+
+(ert-deftest pi-mode-test-switch-buffer-switches-resolved-session ()
+  "Switch buffer displays the buffer returned by session resolution."
+  (let* ((buffer (get-buffer-create "*pi[switch]*"))
+         (process (pi-mode-test--fake-process))
+         (session (make-pi-mode-session :id "*pi[switch]*"
+                                        :buffer buffer :process process))
+         (selected-buffer nil))
+    (unwind-protect
+        (pi-mode-test-with-mock-ghostel
+         (cl-letf (((symbol-function 'pi-mode--resolve-session)
+                    (lambda (&rest _) session))
+                   ((symbol-function 'switch-to-buffer)
+                    (lambda (target) (setq selected-buffer target))))
+           (pi-mode-switch-buffer))
+         (should (eq selected-buffer buffer)))
+      (kill-buffer buffer)
+      (delete-process process))))
+
 (ert-deftest pi-mode-test-session-continue-launch ()
   "continue launches pi -c in a new buffer."
   (pi-mode-test-with-mock-ghostel
