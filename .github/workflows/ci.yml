@@ -21,5 +21,7 @@ jobs:
           melpa: transient package-lint
       - name: Test
         run: make test
+      - name: Compile tests
+        run: make compile-tests
       - name: Lint
         run: make lint
