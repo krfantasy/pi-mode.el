@@ -1513,6 +1513,67 @@ second confirmation from the kill-buffer guard."
        (when (buffer-live-p b) (kill-buffer b))
        (ignore-errors (delete-process p))))))
 
+(ert-deftest pi-mode-test-kill-buffer-guard-aborts-on-decline ()
+  "Declining confirmation leaves the live session and process untouched."
+  (let* ((buffer (generate-new-buffer "*pi[kill-decline]*"))
+         (process (pi-mode-test--fake-process))
+         (session (make-pi-mode-session :id "*pi[kill-decline]*"
+                                         :buffer buffer :process process)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local pi-mode--session session)
+          (let ((pi-mode-confirm-kill t))
+            (cl-letf (((symbol-function 'y-or-n-p)
+                       (lambda (&rest _) nil)))
+              (should-error (pi-mode--kill-buffer-guard) :type 'error)
+              (should (process-live-p process))
+              (should-not (pi-mode-session-exit-requested session)))))
+      (ignore-errors (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest pi-mode-test-kill-buffer-guard-deletes-on-confirm ()
+  "Confirming the guard requests exit and deletes the process."
+  (let* ((buffer (generate-new-buffer "*pi[kill-confirm]*"))
+         (process (pi-mode-test--fake-process))
+         (session (make-pi-mode-session :id "*pi[kill-confirm]*"
+                                         :buffer buffer :process process)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local pi-mode--session session)
+          (let ((pi-mode-confirm-kill t))
+            (cl-letf (((symbol-function 'y-or-n-p)
+                       (lambda (&rest _) t)))
+              (pi-mode--kill-buffer-guard)
+              (should (pi-mode-session-exit-requested session))
+              (should-not (process-live-p process)))))
+      (ignore-errors (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest pi-mode-test-kill-buffer-guard-skips-exit-requested ()
+  "An already requested exit skips confirmation and keeps the process live."
+  (let* ((buffer (generate-new-buffer "*pi[kill-requested]*"))
+         (process (pi-mode-test--fake-process))
+         (session (make-pi-mode-session :id "*pi[kill-requested]*"
+                                         :buffer buffer :process process))
+         (prompt-called nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local pi-mode--session session)
+          (setf (pi-mode-session-exit-requested session) t)
+          (let ((pi-mode-confirm-kill t))
+            (cl-letf (((symbol-function 'y-or-n-p)
+                       (lambda (&rest _)
+                         (setq prompt-called t)
+                         t)))
+              (pi-mode--kill-buffer-guard)
+              (should-not prompt-called)
+              (should (process-live-p process)))))
+      (ignore-errors (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest pi-mode-test-session-stop-keeps-buffer-when-kill-buffer-on-exit-nil ()
   "With `pi-mode-kill-buffer-on-exit' nil, stop leaves the buffer for
 scrollback review; the session is still unregistered."
