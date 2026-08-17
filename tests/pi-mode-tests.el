@@ -3102,6 +3102,64 @@ buffer in the frame's sole regular window, dedicated."
                        (window-buffer (selected-window)))))
       (kill-buffer b) (delete-process p))))
 
+(ert-deftest pi-mode-test-strip-new-tab-replaces-undeletable-pi-window ()
+  "An undeletable sole pi window is made non-dedicated and shows scratch."
+  (let* ((pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[stripfallback]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[stripfallback]*" :buffer b :process p
+                                  :project-root "/tmp/"))
+         (scratch (get-buffer-create "*scratch*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (let ((regular (cl-find-if
+                          (lambda (w) (not (window-parameter w 'window-side)))
+                          (window-list))))
+            (select-window regular)
+            (delete-other-windows))
+          (switch-to-buffer b)
+          (let ((window (selected-window)))
+            (set-window-dedicated-p window t)
+            (cl-letf (((symbol-function 'delete-window)
+                       (lambda (&optional _window)
+                         (error "forced undeletable window"))))
+              (pi-mode--strip-new-tab-pi-windows))
+            (should-not (window-dedicated-p window))
+            (should (eq (window-buffer window) scratch))))
+      (kill-buffer b)
+      (delete-process p))))
+
+(ert-deftest pi-mode-test-show-debug-displays-debug-buffer ()
+  "Showing debug invokes display-buffer with the debug buffer name."
+  (let ((debug-buffer (get-buffer-create "*pi-mode-debug*"))
+        displayed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-buffer)
+                   (lambda (buffer &rest _args)
+                     (setq displayed buffer))))
+          (pi-mode-show-debug)
+          (should (equal displayed "*pi-mode-debug*")))
+      (kill-buffer debug-buffer))))
+
+(ert-deftest pi-mode-test-toggle-debug-flips-option ()
+  "Toggling debug flips the option on and then off."
+  (let ((pi-mode-debug nil))
+    (cl-letf (((symbol-function 'message) (lambda (&rest _args) nil)))
+      (pi-mode-toggle-debug)
+      (should pi-mode-debug)
+      (pi-mode-toggle-debug)
+      (should-not pi-mode-debug))))
+
+(ert-deftest pi-mode-test-configure-cli-args-opens-customize ()
+  "Configuring CLI args invokes Customize for the right variable."
+  (let (customized-variable)
+    (cl-letf (((symbol-function 'customize-variable)
+               (lambda (variable)
+                 (setq customized-variable variable))))
+      (pi-mode-configure-cli-args)
+      (should (eq customized-variable 'pi-mode-cli-args)))))
+
 (ert-deftest pi-mode-test-strip-new-tab-leaves-others ()
   "New-tab stripping leaves non-pi windows alone."
   (let ((b (get-buffer-create "*plain*")))
