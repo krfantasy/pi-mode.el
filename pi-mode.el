@@ -946,9 +946,10 @@ slot past every live one rather than colliding."
                                     (car siblings))
                                    block))
                  ;; New project: smallest block no live session occupies
-                 (cl-loop for b from 0
-                          while (memq (* b block) all-slots)
-                          finally (return (* b block))))))
+                 (let ((b 0))
+                   (while (memq (* b block) all-slots)
+                     (cl-incf b))
+                   (* b block)))))
     (let ((slot base))
       (while (and (< slot (+ base block))
                   (memq slot all-slots))

@@ -12,10 +12,16 @@ ERT_SELECTOR ?= t
 # its native module) and the REAL pi binary, with pi pointed at the
 # in-Emacs OpenAI-compatible e2e model server; never mix in
 # tests/stubs.  `check' runs both.
-.PHONY: test e2e check lint
+.PHONY: test coverage e2e check lint
 
 test:
 	ERT_SELECTOR='$(ERT_SELECTOR)' $(EMACS) -Q --batch -l package --eval '(package-initialize)' --eval '(setq load-prefer-newer t)' -L tests/stubs -L . -L tests -l tests/run-tests.el
+
+coverage:
+	$(EMACS) -Q --batch -l package \
+		--eval '(package-initialize)' \
+		-L tests/stubs -L . -L tests \
+		-l tests/testcover-run.el
 
 e2e:
 	$(EMACS) -Q --batch -l package --eval '(package-initialize)' --eval '(setq load-prefer-newer t)' -L . -L tests/e2e -l tests/e2e/pi-mode-e2e.el -f ert-run-tests-batch-and-exit
