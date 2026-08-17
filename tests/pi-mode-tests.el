@@ -23,16 +23,28 @@
 (defun pi-mode-test--record-call (fn &rest args)
   (push (cons fn args) pi-mode-test--calls))
 
+(defun pi-mode-test--reset-state ()
+  (clrhash pi-mode--sessions)
+  (setq pi-mode--cli-cache nil)
+  (clrhash pi-mode-notifications--state)
+  (setq pi-mode-notifications nil))
+
+(defvar pi-mode-test--fake-processes nil
+  "Fake processes created by the test helpers.")
+
 (defun pi-mode-test--fake-process ()
   "Return a live pipe process usable as a fake pi process."
-  (make-pipe-process :name "pi-mode-test-proc" :buffer nil))
+  (let ((process (make-pipe-process :name "pi-mode-test-proc" :buffer nil)))
+    (push process pi-mode-test--fake-processes)
+    process))
 
 (defun pi-mode-test--with-mock-ghostel (body)
   "Run BODY with the ghostel exec/send surface replaced by recorders."
   (let ((pi-mode-test--calls nil)
+        (pi-mode-test--fake-processes nil)
         (pi-mode-confirm-kill nil)     ; keep kill-buffer hooks inert in batch
         (pi-mode-launch-settle-delay 0)) ; hermetic: no real launch sleeps
-    (clrhash pi-mode--sessions)      ; hermetic: no cross-test session leaks
+    (pi-mode-test--reset-state)
     (cl-letf (((symbol-function 'ghostel-exec)
                (lambda (&rest args)
                  (apply #'pi-mode-test--record-call 'ghostel-exec args)
@@ -45,7 +57,12 @@
                (lambda (&rest args) (apply #'pi-mode-test--record-call 'ghostel-paste-string args)))
               ((symbol-function 'ghostel-send-C-c)
                (lambda (&rest args) (apply #'pi-mode-test--record-call 'ghostel-send-C-c args))))
-      (funcall body))))
+      (unwind-protect
+          (funcall body)
+        (dolist (process pi-mode-test--fake-processes)
+          (when (process-live-p process)
+            (delete-process process)))
+        (pi-mode-test--reset-state)))))
 
 (defmacro pi-mode-test-with-mock-ghostel (&rest body)
   "Run BODY with the ghostel API mocked."
