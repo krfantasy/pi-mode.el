@@ -789,6 +789,37 @@ wrong-number-of-arguments."
         (delete-process p1) (delete-process p2)))))
 
 
+(ert-deftest pi-mode-test-resolve-visible-single-session ()
+  "Resolution picks the one visible session among several project sessions."
+  (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+    (let* ((b1 (get-buffer-create "*pi[rv1]*"))
+           (b2 (get-buffer-create "*pi[rv2]*"))
+           (p1 (pi-mode-test--fake-process))
+           (p2 (pi-mode-test--fake-process))
+           (s1 (make-pi-mode-session :id "*pi[rv1]*" :buffer b1
+                                      :process p1 :project-root "/tmp/"))
+           (s2 (make-pi-mode-session :id "*pi[rv2]*" :buffer b2
+                                      :process p2 :project-root "/tmp/")))
+      (unwind-protect
+          (progn
+            (pi-mode--register-session s1)
+            (pi-mode--register-session s2)
+            (cl-letf (((symbol-function 'pi-mode--visible-sessions)
+                       (lambda (sessions)
+                         (list (cl-find-if
+                                (lambda (session)
+                                  (equal (pi-mode-session-id session)
+                                         "*pi[rv2]*"))
+                                sessions)))))
+              (with-temp-buffer
+                (should (eq (pi-mode--resolve-session nil) s2)))))
+        (pi-mode--unregister-session "*pi[rv1]*")
+        (pi-mode--unregister-session "*pi[rv2]*")
+        (kill-buffer b1)
+        (kill-buffer b2)
+        (delete-process p1)
+        (delete-process p2)))))
+
 (ert-deftest pi-mode-test-insert-text ()
   "insert-text pastes without pressing return and runs before-send hook."
   (pi-mode-test-with-mock-ghostel
@@ -4214,6 +4245,28 @@ non-nil, and leaves focus alone when it is nil."
       (should (equal msgs '("pi finished: fall-proj")))
       (should (= dings 1))
       (should-not alerts))))
+
+(ert-deftest pi-mode-test-notifications-alert-delivery ()
+  "When alert is available, delivery uses it instead of message and ding."
+  (let ((session (make-pi-mode-session :id "*pi[na]*"
+                                       :project-root "/tmp/alert-proj/"))
+        (alerts nil)
+        (messages nil)
+        (dings 0))
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &optional _filename _noerror)
+                 (eq feature 'alert)))
+              ((symbol-function 'alert)
+               (lambda (&rest args) (push args alerts)))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (push (apply #'format fmt args) messages)))
+              ((symbol-function 'ding)
+               (lambda () (setq dings (1+ dings)))))
+      (pi-mode-notifications--deliver session)
+      (should (equal alerts '(("pi finished: alert-proj" :title "pi-mode"))))
+      (should-not messages)
+      (should (= dings 0)))))
 
 (ert-deftest pi-mode-test-notifications-message ()
   "The notification text carries the project and optional session name."
