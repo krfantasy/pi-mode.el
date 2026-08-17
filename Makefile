@@ -1,4 +1,5 @@
 EMACS ?= emacs
+ERT_SELECTOR ?= t
 # package-initialize loads installed packages (transient); tests/stubs
 # provides a hermetic ghostel stub (real ghostel needs a native module
 # and is not assumed present).  Order matters: stubs must win.
@@ -14,7 +15,7 @@ EMACS ?= emacs
 .PHONY: test e2e check lint
 
 test:
-	$(EMACS) -Q --batch -l package --eval '(package-initialize)' --eval '(setq load-prefer-newer t)' -L tests/stubs -L . -L tests -l tests/pi-mode-tests.el -f ert-run-tests-batch-and-exit
+	ERT_SELECTOR='$(ERT_SELECTOR)' $(EMACS) -Q --batch -l package --eval '(package-initialize)' --eval '(setq load-prefer-newer t)' -L tests/stubs -L . -L tests -l tests/run-tests.el
 
 e2e:
 	$(EMACS) -Q --batch -l package --eval '(package-initialize)' --eval '(setq load-prefer-newer t)' -L . -L tests/e2e -l tests/e2e/pi-mode-e2e.el -f ert-run-tests-batch-and-exit
