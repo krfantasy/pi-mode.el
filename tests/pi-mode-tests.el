@@ -3959,6 +3959,147 @@ non-nil, and leaves focus alone when it is nil."
                  (should (= 2 (length calls)))))))
        (pi-mode-test--notif-teardown session dir)))))
 
+(ert-deftest pi-mode-test-notifications-jsonl-files-recurses ()
+  "Notification discovery finds JSONL files in nested run directories."
+  (let* ((dir (make-temp-file "pi-notif-files-" t))
+         (nested (expand-file-name "run-0" dir))
+         (file (expand-file-name "session.jsonl" nested)))
+    (unwind-protect
+        (progn
+          (make-directory nested t)
+          (pi-mode-test--write-jsonl file (list '((type . "session"))))
+          (should (equal (pi-mode-notifications--jsonl-files dir)
+                         (list file))))
+      (delete-directory dir t))))
+
+(ert-deftest pi-mode-test-notifications-scan-tail-retries-partial-line ()
+  "A partial JSONL entry is retried from its original byte offset."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-tail-" t))
+          (session (pi-mode-test--notif-session "partial" dir))
+          (file (expand-file-name "session.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t)
+                   ((symbol-function 'pi-mode-notifications--deliver)
+                    (lambda (value) (push value calls))))
+           (pi-mode-test--write-jsonl
+            file (list (pi-mode-test--msg-entry "user")))
+           ;; The first scan establishes a pending state at the end of the
+           ;; complete user entry without delivering a notification.
+           (pi-mode-notifications--poll)
+           (let ((start (file-attribute-size (file-attributes file))))
+             ;; Append a JSON object that is still missing its closing braces.
+             (with-temp-buffer
+               (insert "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"")
+               (write-region (point-min) (point-max) file t))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             (should (= start (car (gethash file pi-mode-notifications--state))))
+             ;; Completing the same line lets the next poll parse and deliver.
+             (with-temp-buffer
+               (insert "}}\n")
+               (write-region (point-min) (point-max) file t))
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             (should (eq (car calls) session))
+             (should (= (file-attribute-size (file-attributes file))
+                        (car (gethash file pi-mode-notifications--state))))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-infer-pending-uses-entry-timestamp ()
+  "Pending inference accepts entry and message level ISO timestamps."
+  (pi-mode-test-with-mock-ghostel
+   (let ((dir (make-temp-file "pi-notif-ts-" t)))
+     (unwind-protect
+         (let ((entry-file (expand-file-name "entry.jsonl" dir))
+               (message-file (expand-file-name "message.jsonl" dir)))
+           ;; The entry-level timestamp is used for this unfinished turn,
+           ;; then a newer terminal entry clears its pending state.
+           (pi-mode-test--write-jsonl
+            entry-file
+            (list '((type . "message")
+                    (timestamp . "2026-08-17T10:00:00.000Z")
+                    (message . ((role . "user"))))))
+           (should (pi-mode-notifications--infer-pending entry-file))
+           (pi-mode-test--write-jsonl
+            entry-file
+            (list '((type . "message")
+                    (timestamp . "2026-08-17T10:01:00.000Z")
+                    (message . ((role . "assistant")
+                                (stopReason . "stop"))))) t)
+           (should-not (pi-mode-notifications--infer-pending entry-file))
+           ;; The nested message timestamp follows the same pending rules.
+           (pi-mode-test--write-jsonl
+            message-file
+            (list (pi-mode-test--msg-entry
+                   "user" nil "2026-08-17T11:00:00.000Z")))
+           (should (pi-mode-notifications--infer-pending message-file))
+           (pi-mode-test--write-jsonl
+            message-file
+            (list (pi-mode-test--msg-entry
+                   "assistant" "stop" "2026-08-17T11:01:00.000Z")) t)
+           (should-not (pi-mode-notifications--infer-pending message-file)))
+       (delete-directory dir t)))))
+
+(ert-deftest pi-mode-test-notifications-prune-removes-dead-file-state ()
+  "Pruning keeps state under live session directories only."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((live-dir (make-temp-file "pi-notif-live-" t))
+          (dead-dir (make-temp-file "pi-notif-dead-" t))
+          (session (pi-mode-test--notif-session "prune" live-dir))
+          (live-file (expand-file-name "live.jsonl" live-dir))
+          (dead-file (expand-file-name "dead.jsonl" dead-dir)))
+     (unwind-protect
+         (progn
+           (pi-mode-test--write-jsonl live-file (list '((type . "session"))))
+           (pi-mode-test--write-jsonl dead-file (list '((type . "session"))))
+           (puthash live-file '(1 . nil) pi-mode-notifications--state)
+           (puthash dead-file '(1 . nil) pi-mode-notifications--state)
+           (cl-letf (((symbol-function 'pi-mode--session-dir)
+                      (lambda (_root) live-dir)))
+             (pi-mode-notifications--prune))
+           (should (equal (gethash live-file pi-mode-notifications--state)
+                          '(1 . nil)))
+           (should-not (gethash dead-file pi-mode-notifications--state)))
+       (pi-mode-test--notif-teardown session live-dir)
+       (delete-directory dead-dir t)))))
+
+(ert-deftest pi-mode-test-notifications-delivery-skips-visible-session ()
+  "Visible sessions are not delivered when the option is disabled."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-visible-" t))
+          (session (pi-mode-test--notif-session "skip-visible" dir))
+          (calls 0))
+     (unwind-protect
+         (cl-letf (((symbol-function 'get-buffer-window)
+                    (lambda (&rest _) 'visible-window))
+                   ((symbol-function 'pi-mode-notifications--deliver)
+                    (lambda (_session) (setq calls (1+ calls)))))
+           (let ((pi-mode-notifications-when-visible nil))
+             (pi-mode-notifications--maybe-deliver session)
+             (should (= 0 calls))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-delivery-allows-visible-session-when-enabled ()
+  "Visible sessions are delivered when the option is enabled."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-visible-" t))
+          (session (pi-mode-test--notif-session "allow-visible" dir))
+          (calls nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'get-buffer-window)
+                    (lambda (&rest _) 'visible-window))
+                   ((symbol-function 'pi-mode-notifications--deliver)
+                    (lambda (value) (push value calls))))
+           (let ((pi-mode-notifications-when-visible t))
+             (pi-mode-notifications--maybe-deliver session)
+             (should (= 1 (length calls)))
+             (should (eq (car calls) session))))
+       (pi-mode-test--notif-teardown session dir)))))
+
 (ert-deftest pi-mode-test-notifications-rotation ()
   "A shrunken file resets the scan state; growth is picked up again."
   (pi-mode-test-with-mock-ghostel
