@@ -3417,6 +3417,64 @@ non-nil, and leaves focus alone when it is nil."
        (pi-mode--unregister-session "*pi[hv]*")
        (kill-buffer b) (delete-process p)))))
 
+(ert-deftest pi-mode-test-session-status-truncates-after-four ()
+  "The header truncates project sessions after four entries."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((root "/tmp/status-proj/")
+          (sessions
+           (cl-loop for index from 1 to 5
+                    collect
+                    (make-pi-mode-session
+                     :id (format "*pi[status-%d]*" index)
+                     :buffer (get-buffer-create (format "*pi[status-%d]*" index))
+                     :process (pi-mode-test--fake-process)
+                     :project-root root
+                     :name (format "session-%d" index)
+                     :last-used (current-time)))))
+     (unwind-protect
+         (progn
+           (dolist (session sessions)
+             (pi-mode--register-session session))
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () root))
+                     ((symbol-function 'pi-mode--visible-sessions)
+                      (lambda (visible-sessions)
+                        (cl-subseq visible-sessions
+                                   0 (min 4 (length visible-sessions))))))
+             (let ((status (pi-mode--session-status)))
+               (should (string-match-p "5 sessions" status))
+               (should (string-match-p "4 visible" status))
+               (should (string-match-p "…and 1 more" status)))))
+       (dolist (session sessions)
+         (pi-mode--unregister-session (pi-mode-session-id session))
+         (when (buffer-live-p (pi-mode-session-buffer session))
+           (kill-buffer (pi-mode-session-buffer session)))
+         (when (process-live-p (pi-mode-session-process session))
+           (delete-process (pi-mode-session-process session))))))))
+
+(ert-deftest pi-mode-test-session-status-reports-foreign-sessions ()
+  "The header reports live sessions in other projects."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((buffer (get-buffer-create "*pi[foreign-status]*"))
+          (process (pi-mode-test--fake-process))
+          (session (make-pi-mode-session
+                    :id "*pi[foreign-status]*"
+                    :buffer buffer
+                    :process process
+                    :project-root "/tmp/foreign-status-proj/"
+                    :last-used (current-time))))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session session)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/current-status-proj/")))
+             (let ((status (pi-mode--session-status)))
+               (should (string-match-p "No session in this project" status))
+               (should (string-match-p "1 running elsewhere" status)))))
+       (pi-mode--unregister-session (pi-mode-session-id session))
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (when (process-live-p process) (delete-process process))))))
+
 ;;; Prompt editing tests
 
 (defun pi-mode-test--screen (width &rest content)
