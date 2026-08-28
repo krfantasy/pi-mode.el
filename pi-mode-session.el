@@ -109,15 +109,21 @@ terminal buffer so the buffer name and the display name stay in sync."
 Stopping is destructive, so the target is never guessed: the current
 session buffer's session, the sole session of the project, or the sole
 visible one is stopped directly; otherwise a completing-read picks the
-session.  There is no confirmation prompt — the resolution already
-asks when the target is ambiguous (cc-ide parity).  The process is
-deleted; the sentinel cleanup then removes the buffer per
-`pi-mode-kill-buffer-on-exit'."
+session.  When `pi-mode-confirm-quit' is non-nil a y-or-n prompt asks
+before stopping; declining leaves the session untouched (the
+resolution already asks when the target is ambiguous, cc-ide parity).
+The process is deleted; the sentinel cleanup then removes the buffer
+per `pi-mode-kill-buffer-on-exit'."
   (interactive)
   (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
-    (setf (pi-mode-session-exit-requested session) t)
-    (delete-process (pi-mode-session-process session))
-    (pi-mode-log "stopped session %s" (pi-mode-session-id session))))
+    (if (and pi-mode-confirm-quit
+             (not (y-or-n-p
+                   (format "Stop pi session %s? "
+                           (pi-mode-session-id session)))))
+        (pi-mode-log "stop declined for %s" (pi-mode-session-id session))
+      (setf (pi-mode-session-exit-requested session) t)
+      (delete-process (pi-mode-session-process session))
+      (pi-mode-log "stopped session %s" (pi-mode-session-id session)))))
 
 ;;;###autoload
 (defun pi-mode-session-stop-all (&optional all-projects)

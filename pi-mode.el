@@ -127,6 +127,14 @@ scrollback) after the process ends."
   :type 'boolean
   :group 'pi)
 
+(defcustom pi-mode-confirm-quit t
+  "When non-nil, confirm before stopping a running pi session.
+Guards `pi-mode-session-stop' (menu \"q\"); declining the prompt
+leaves the session running.  Distinct from `pi-mode-confirm-kill',
+which guards killing the session buffer."
+  :type 'boolean
+  :group 'pi)
+
 (defcustom pi-mode-launch-settle-delay 0.1
   "Seconds to wait after launching pi before checking the process is alive.
 The terminal backend may take a moment to surface an immediate CLI

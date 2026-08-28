@@ -1566,7 +1566,8 @@ wrong-number-of-arguments."
        (delete-process p1) (delete-process p2)))))
 
 (ert-deftest pi-mode-test-session-stop-no-confirm ()
-  "stop from the session's own buffer stops it without confirmation."
+  "stop from the session's own buffer stops it without confirmation
+when `pi-mode-confirm-quit' is nil."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[st]*"))
           (p (pi-mode-test--fake-process))
@@ -1578,12 +1579,64 @@ wrong-number-of-arguments."
            (with-current-buffer b
              (cl-letf (((symbol-function 'pi-mode--project-root)
                         (lambda () "/tmp/"))
+                       (pi-mode-confirm-quit nil)
                        ((symbol-function 'y-or-n-p)
                         (lambda (&rest _) (error "stop must not confirm"))))
                (pi-mode-session-stop)))
            (should-not (process-live-p p))
            (should (pi-mode-session-exit-requested s)))
        (pi-mode--unregister-session "*pi[st]*")
+       (kill-buffer b)
+       (ignore-errors (delete-process p))))))
+
+(ert-deftest pi-mode-test-session-stop-decline-leaves-session ()
+  "Declining the `pi-mode-confirm-quit' prompt leaves the session and
+process untouched."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[stq1]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[stq1]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       (pi-mode-confirm-quit t)
+                       ((symbol-function 'y-or-n-p)
+                        (lambda (&rest _) nil)))
+               (pi-mode-session-stop)))
+           (should (process-live-p p))
+           (should-not (pi-mode-session-exit-requested s))
+           (should (eq (pi-mode--session-by-buffer b) s)))
+       (pi-mode--unregister-session "*pi[stq1]*")
+       (kill-buffer b)
+       (ignore-errors (delete-process p))))))
+
+(ert-deftest pi-mode-test-session-stop-accept-stops-session ()
+  "Accepting the `pi-mode-confirm-quit' prompt requests exit and deletes
+the process."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[stq2]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[stq2]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (prompt-called nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       (pi-mode-confirm-quit t)
+                       ((symbol-function 'y-or-n-p)
+                        (lambda (&rest _) (setq prompt-called t) t)))
+               (pi-mode-session-stop)))
+           (should prompt-called)
+           (should-not (process-live-p p))
+           (should (pi-mode-session-exit-requested s)))
+       (pi-mode--unregister-session "*pi[stq2]*")
        (kill-buffer b)
        (ignore-errors (delete-process p))))))
 
@@ -1608,6 +1661,7 @@ wrong-number-of-arguments."
                       (lambda () "/tmp/"))
                      ((symbol-function 'completing-read)
                       (lambda (&rest _) "*pi[sp1]*"))
+                     (pi-mode-confirm-quit nil)
                      ((symbol-function 'y-or-n-p)
                       (lambda (&rest _) (error "stop must not confirm"))))
              (with-temp-buffer
@@ -1641,6 +1695,7 @@ second confirmation from the kill-buffer guard."
              (cl-letf (((symbol-function 'pi-mode--project-root)
                         (lambda () "/tmp/"))
                        (pi-mode-confirm-kill t)
+                       (pi-mode-confirm-quit nil)
                        ((symbol-function 'y-or-n-p)
                         (lambda (&rest _) (error "guard must not confirm"))))
                (pi-mode-session-stop)))
@@ -1728,7 +1783,8 @@ scrollback review; the session is still unregistered."
            (pi-mode--attach-sentinel p)
            (with-current-buffer b
              (cl-letf (((symbol-function 'pi-mode--project-root)
-                        (lambda () "/tmp/")))
+                        (lambda () "/tmp/"))
+                       (pi-mode-confirm-quit nil))
                (pi-mode-session-stop)))
            (should-not (process-live-p p))
            (should (buffer-live-p b))
