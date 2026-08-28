@@ -4,16 +4,13 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1") (ghostel "0.49") (transient "0.7"))
 ;; Keywords: tools, processes
-;; URL: https://github.com/jayxu/pi-mode.el
-;; License: GPL-3.0-or-later
-
-;; This file is not part of GNU Emacs.
+;; URL: https://github.com/krfantasy/pi-mode.el
+;; License: The License
 
 ;;; Commentary:
 ;; Run the pi coding agent inside a ghostel terminal buffer with project
 ;; detection, prompt-input region sending, prompt editing in a markdown
-;; popup, session management, and a transient command menu.  Design spec:
-;; docs/superpowers/specs/2026-08-11-pi-mode-design.md
+;; popup, session management, and a transient command menu.
 
 ;;; Code:
 
@@ -26,6 +23,9 @@
   "Interface for the pi coding agent."
   :group 'tools
   :prefix "pi-mode-")
+
+(defconst pi-mode-version "0.1.0"
+  "Version of pi-mode; keep in sync with the `Version' header above.")
 
 (defcustom pi-mode-debug t
   "When non-nil, log pi-mode activity to the *pi-mode-debug* buffer."
@@ -1183,7 +1183,7 @@ call from your configuration."
   (interactive "P")
   (message "pi-mode: pi-side keybinding installation was removed; drop (pi-mode-install-keybindings) from your config"))
 
-(make-obsolete 'pi-mode-install-keybindings 'ignore "0.2.0")
+(make-obsolete 'pi-mode-install-keybindings 'ignore "0.1.0")
 
 ;;; Configure commands (spec 8 Configure group)
 

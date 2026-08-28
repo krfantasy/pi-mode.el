@@ -3,10 +3,8 @@
 ;; Author: Jay Xu
 ;; Version: 0.1.0
 ;; Keywords: tools, processes
-;; URL: https://github.com/jayxu/pi-mode.el
-;; License: GPL-3.0-or-later
-
-;; This file is not part of GNU Emacs.
+;; URL: https://github.com/krfantasy/pi-mode.el
+;; License: The License
 
 ;;; Commentary:
 ;; The pi-mode command surface: one transient prefix, `C-c C-''.

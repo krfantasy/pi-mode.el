@@ -1,4 +1,9 @@
+.pi/
 .pi-subagents/
 .superpowers/
-*.elc
 .worktrees
+*.elc
+/REVIEW.md
+/TODO.org
+/docs/superpowers/
+/research/

@@ -4,10 +4,8 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1") (ghostel "0.49") (transient "0.7"))
 ;; Keywords: tools, processes
-;; URL: https://github.com/jayxu/pi-mode.el
-;; License: GPL-3.0-or-later
-
-;; This file is not part of GNU Emacs.
+;; URL: https://github.com/krfantasy/pi-mode.el
+;; License: The License
 
 ;;; Commentary:
 ;; Desktop notifications when a pi session finishes answering a turn.
