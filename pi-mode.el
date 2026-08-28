@@ -109,7 +109,7 @@ wiped by `ghostel-mode' activation."
   id name buffer process project-root last-used window-slot
   cleanup-done exit-requested)
 
-(defcustom pi-mode-cli-args '("--tui-mode" "regular")
+(defcustom pi-mode-cli-args nil
   "Extra command-line arguments passed to pi at launch."
   :type '(repeat string)
   :group 'pi)
