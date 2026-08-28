@@ -307,7 +307,7 @@ launch fails the scratch buffer is removed."
           (with-current-buffer buffer
             (pi-mode--setup-session-buffer session))
           (setf (pi-mode-session-window-slot session)
-                (pi-mode--assign-window-slot project-root))
+                (pi-mode--launch-window-slot session))
           (pi-mode--register-session session)
           (pi-mode--attach-sentinel process)
           ;; display-buffer, not pop-to-buffer: window selection is
@@ -959,6 +959,46 @@ slot past every live one rather than colliding."
         ;; Block exhausted: overflow past every live slot rather than
         ;; spilling into a neighboring project's block.
         (1+ (if all-slots (apply #'max all-slots) -1))))))
+
+(defun pi-mode--visible-pi-window-mru ()
+  "Return the visible pi side window showing the most recently used session.
+Searches the selected frame's windows on `pi-mode-window-side' whose
+buffer hosts a session; a session with no MRU stamp counts as the
+oldest.  Return nil when no pi window is visible."
+  (let ((candidates
+         (cl-remove-if-not
+          (lambda (window)
+            (and (eq (window-parameter window 'window-side) pi-mode-window-side)
+                 (pi-mode--session-by-buffer (window-buffer window))))
+          (window-list))))
+    (car (cl-sort candidates
+                  (lambda (w1 w2)
+                    (time-less-p
+                     (or (pi-mode-session-last-used
+                          (pi-mode--session-by-buffer (window-buffer w2)))
+                         0)
+                     (or (pi-mode-session-last-used
+                          (pi-mode--session-by-buffer (window-buffer w1)))
+                         0)))))))
+
+(defun pi-mode--launch-window-slot (session)
+  "Return the side-window slot for displaying SESSION at launch.
+When a pi side window is visible, take over the slot of the window
+showing the most recently used session: the new session replaces the
+visible pi window (claude-code-ide's pre-slot single-window behavior)
+instead of stacking a new one below it.  The displaced session is
+re-homed to a fresh slot in its own project block, so restoring or
+showing it later opens side by side rather than evicting the new
+session.  Without a visible pi window, fall back to a fresh slot via
+`pi-mode--assign-window-slot'."
+  (if-let* ((window (pi-mode--visible-pi-window-mru)))
+      (let ((displaced (pi-mode--session-by-buffer (window-buffer window))))
+        (when displaced
+          (setf (pi-mode-session-window-slot displaced)
+                (pi-mode--assign-window-slot
+                 (pi-mode-session-project-root displaced))))
+        (or (window-parameter window 'window-slot) 0))
+    (pi-mode--assign-window-slot (pi-mode-session-project-root session))))
 
 ;; Pi buffers dock in a side window; the action function reads the
 ;; window customization at display time, so changing the defcustoms

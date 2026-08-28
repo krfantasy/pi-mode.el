@@ -3309,6 +3309,135 @@ non-nil, and leaves focus alone when it is nil."
            (should (eq before (selected-window))))
        (kill-buffer buffer)))))
 
+(ert-deftest pi-mode-test-launch-replaces-visible-pi-window ()
+  "Launching with a visible pi window replaces that window instead of
+stacking a new one: the new session takes the window's slot, the
+displaced session is re-homed to a fresh slot in its own project
+block, and its buffer is no longer displayed."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((old-buffer (get-buffer-create "*pi[repold]*"))
+          (old-process (pi-mode-test--fake-process))
+          (old-session (make-pi-mode-session
+                        :id "*pi[repold]*" :buffer old-buffer
+                        :process old-process :project-root "/tmp/replaced/"
+                        :window-slot 0)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session old-session)
+           (with-current-buffer old-buffer (setq-local pi-mode--session old-session))
+           (let ((old-win (display-buffer old-buffer)))
+             (should (windowp old-win))
+             (let* ((launched (pi-mode--launch-buffer "/tmp/takeover/"
+                                                     pi-mode-cli-args))
+                    (buffer (pi-mode-session-buffer launched))
+                    (win (get-buffer-window buffer)))
+               (unwind-protect
+                   (progn
+                     ;; the new session occupies the displaced session's window
+                     (should (eq win old-win))
+                     (should (eq (window-buffer old-win) buffer))
+                     (should-not (get-buffer-window old-buffer))
+                     ;; the new session took over the window's slot and the
+                     ;; displaced session was re-homed elsewhere
+                     (should (= (pi-mode-session-window-slot launched)
+                                (or (window-parameter old-win 'window-slot) 0)))
+                     (should-not (= (pi-mode-session-window-slot old-session)
+                                    (pi-mode-session-window-slot launched))))
+                 (kill-buffer buffer)))))
+       (pi-mode--unregister-session "*pi[repold]*")
+       (kill-buffer old-buffer)
+       (delete-process old-process)))))
+
+(ert-deftest pi-mode-test-launch-replaces-mru-visible-pi-window ()
+  "Among several visible pi windows, launch replaces the one showing the
+most recently used session and leaves the others in place."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[mru1]*"))
+          (b2 (get-buffer-create "*pi[mru2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[mru1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/mru-proj/"
+                                    :window-slot 0))
+          (s2 (make-pi-mode-session :id "*pi[mru2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/mru-proj/"
+                                    :window-slot 1)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           (let ((w1 (display-buffer b1))
+                 (w2 (display-buffer b2)))
+             (should (windowp w1)) (should (windowp w2))
+             (should-not (eq w1 w2))
+             ;; display stamps MRU; make s2 clearly the most recent
+             (setf (pi-mode-session-last-used s1)
+                   (time-subtract (current-time) 60))
+             (setf (pi-mode-session-last-used s2) (current-time))
+             (let* ((launched (pi-mode--launch-buffer "/tmp/mru-launch/"
+                                                      pi-mode-cli-args))
+                    (buffer (pi-mode-session-buffer launched)))
+               (unwind-protect
+                   (progn
+                     (should (eq (get-buffer-window buffer) w2))
+                     (should (eq (window-buffer w2) buffer))
+                     ;; the older session's window is untouched
+                     (should (eq (window-buffer w1) b1))
+                     (should-not (get-buffer-window b2))
+                     (should (= (pi-mode-session-window-slot launched)
+                                (window-parameter w2 'window-slot))))
+                 (kill-buffer buffer)))))
+       (pi-mode--unregister-session "*pi[mru1]*")
+       (pi-mode--unregister-session "*pi[mru2]*")
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)))))
+
+(ert-deftest pi-mode-test-restore-after-takeover-side-by-side ()
+  "Re-displaying a session displaced by launch opens a new side window
+instead of evicting the launching session (no slot collision on
+restore)."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((old-buffer (get-buffer-create "*pi[rep2]*"))
+          (old-process (pi-mode-test--fake-process))
+          (old-session (make-pi-mode-session
+                        :id "*pi[rep2]*" :buffer old-buffer
+                        :process old-process :project-root "/tmp/replaced2/"
+                        :window-slot 0)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session old-session)
+           (with-current-buffer old-buffer (setq-local pi-mode--session old-session))
+           (display-buffer old-buffer)
+           (let* ((launched (pi-mode--launch-buffer "/tmp/takeover2/"
+                                                    pi-mode-cli-args))
+                  (buffer (pi-mode-session-buffer launched))
+                  (win (get-buffer-window buffer))
+                  (restored-win (display-buffer old-buffer)))
+             (unwind-protect
+                 (progn
+                   (should (windowp restored-win))
+                   (should-not (eq restored-win win))
+                   ;; the launching session stays on screen in its window
+                   (should (eq (window-buffer win) buffer))
+                   (should (eq (window-buffer restored-win) old-buffer)))
+               (kill-buffer buffer))))
+       (pi-mode--unregister-session "*pi[rep2]*")
+       (kill-buffer old-buffer)
+       (delete-process old-process)))))
+
+(ert-deftest pi-mode-test-launch-no-visible-pi-window-fresh-slot ()
+  "With no visible pi window, launch keeps the fresh-slot behavior:
+the first session starts at slot 0."
+  (pi-mode-test-with-mock-ghostel
+   (let ((session (pi-mode--launch-buffer "/tmp/fresh-slot/" pi-mode-cli-args)))
+     (unwind-protect
+         (progn
+           (should (= (pi-mode-session-window-slot session) 0))
+           (should (get-buffer-window (pi-mode-session-buffer session))))
+       (kill-buffer (pi-mode-session-buffer session))))))
+
 (ert-deftest pi-mode-test-session-buffer-p-registry-fallback ()
   "The predicate matches registered sessions even when the local was wiped."
   (let* ((b (get-buffer-create "*pi[reg]*"))
