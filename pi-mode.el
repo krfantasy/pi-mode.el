@@ -27,7 +27,7 @@
 (defconst pi-mode-version "0.1.0"
   "Version of pi-mode; keep in sync with the `Version' header above.")
 
-(defcustom pi-mode-debug t
+(defcustom pi-mode-debug nil
   "When non-nil, log pi-mode activity to the *pi-mode-debug* buffer."
   :type 'boolean
   :group 'pi)
