@@ -157,21 +157,61 @@ With prefix argument ALL-PROJECTS, stop the sessions of all projects."
                      (if (cdr sessions) "s" ""))))))
 
 ;;;###autoload
+(defun pi-mode--switch-to-session (session)
+  "Switch to SESSION, replacing the current panel instead of splitting.
+When SESSION is already displayed in the selected frame, its window
+is selected.  Otherwise the session buffer is shown in the selected
+window: a plain window is replaced in place, and a pi side panel
+(dedicated to another session) is taken over — its dedication stays
+and its side-slot parameter is re-keyed to SESSION, so later
+displays of SESSION reuse this window instead of creating a
+duplicate.  A window dedicated to an unrelated buffer falls back to
+`display-buffer' (the normal pi side-window path).  Also stamps
+SESSION as most recently used."
+  (let* ((buffer (pi-mode-session-buffer session))
+         (window (selected-window))
+         (existing (get-buffer-window buffer 0)))
+    (cond
+     (existing
+      (select-window existing))
+     ((not (window-dedicated-p window))
+      (set-window-buffer window buffer))
+     ((pi-mode--session-by-buffer (window-buffer window))
+      ;; Re-key the panel to the target session in place.  A plain
+      ;; `switch-to-buffer' falls back to `display-buffer' inside a
+      ;; dedicated window, which opens a NEW side window for the
+      ;; target (display-buffer-alist routing), splitting the layout.
+      (set-window-dedicated-p window nil)
+      (set-window-buffer window buffer)
+      (set-window-dedicated-p window t)
+      (set-window-parameter window 'window-slot
+                            (or (pi-mode-session-window-slot session) 0)))
+     (t
+      (display-buffer buffer)))
+    ;; MRU parity with `pi-mode--display-buffer': switching makes the
+    ;; target the most-recently-used session.
+    (setf (pi-mode-session-last-used session) (current-time))))
+
+;;;###autoload
 (defun pi-mode-list-sessions ()
-  "List live pi sessions and switch to the chosen one."
+  "List live pi sessions and switch to the chosen one.
+The chosen session replaces the current panel instead of splitting
+off a new window (`pi-mode--switch-to-session')."
   (interactive)
   (let ((sessions (pi-mode--active-sessions)))
     (unless sessions
       (user-error "No running pi sessions"))
     (let ((session (pi-mode--prompt-session sessions)))
-      (switch-to-buffer (pi-mode-session-buffer session)))))
+      (pi-mode--switch-to-session session))))
 
 ;;;###autoload
 (defun pi-mode-switch-buffer ()
-  "Switch to the buffer of the target pi session."
+  "Switch to the buffer of the target pi session.
+The current panel is replaced with the session buffer instead of
+splitting off a new side window (`pi-mode--switch-to-session')."
   (interactive)
   (let ((session (pi-mode--resolve-session current-prefix-arg)))
-    (switch-to-buffer (pi-mode-session-buffer session))))
+    (pi-mode--switch-to-session session)))
 
 (provide 'pi-mode-session)
 ;;; pi-mode-session.el ends here

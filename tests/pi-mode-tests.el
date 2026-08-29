@@ -1275,17 +1275,17 @@ wrong-number-of-arguments."
                                     :project-root "/tmp/proj/"))
          (s2 (make-pi-mode-session :id "*pi[list-two]*" :buffer b2 :process p2
                                     :project-root "/tmp/proj/"))
-         (selected-buffer nil))
+         (target nil))
     (unwind-protect
         (pi-mode-test-with-mock-ghostel
          (pi-mode--register-session s1)
          (pi-mode--register-session s2)
          (cl-letf (((symbol-function 'pi-mode--prompt-session)
                     (lambda (_sessions) s2))
-                   ((symbol-function 'switch-to-buffer)
-                    (lambda (buffer) (setq selected-buffer buffer))))
+                   ((symbol-function 'pi-mode--switch-to-session)
+                    (lambda (session) (setq target session))))
            (pi-mode-list-sessions))
-         (should (eq selected-buffer b2)))
+         (should (eq target s2)))
       (pi-mode--unregister-session (pi-mode-session-id s1))
       (pi-mode--unregister-session (pi-mode-session-id s2))
       (kill-buffer b1)
@@ -1299,17 +1299,118 @@ wrong-number-of-arguments."
          (process (pi-mode-test--fake-process))
          (session (make-pi-mode-session :id "*pi[switch]*"
                                         :buffer buffer :process process))
-         (selected-buffer nil))
+         (target nil))
     (unwind-protect
         (pi-mode-test-with-mock-ghostel
          (cl-letf (((symbol-function 'pi-mode--resolve-session)
                     (lambda (&rest _) session))
-                   ((symbol-function 'switch-to-buffer)
-                    (lambda (target) (setq selected-buffer target))))
+                   ((symbol-function 'pi-mode--switch-to-session)
+                    (lambda (s) (setq target s))))
            (pi-mode-switch-buffer))
-         (should (eq selected-buffer buffer)))
+         (should (eq target session)))
       (kill-buffer buffer)
       (delete-process process))))
+
+(ert-deftest pi-mode-test-switch-to-session-replaces-current-window ()
+  "Switching to a hidden session replaces the current window's buffer.
+The chosen session must land in the current panel, not split off a
+new side window (regression for the pre-fix `switch-to-buffer' path)."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[st1]*"))
+          (b2 (get-buffer-create "*pi[st2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[st1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/"))
+          (s2 (make-pi-mode-session :id "*pi[st2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/"))
+          (frame (selected-frame))
+          (win (selected-window)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (pi-mode--switch-to-session s2)
+           (should (eq (window-buffer win) b2))
+           (should (one-window-p nil frame)))
+       (pi-mode--unregister-session (pi-mode-session-id s1))
+       (pi-mode--unregister-session (pi-mode-session-id s2))
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
+
+(ert-deftest pi-mode-test-switch-to-session-takes-over-pi-panel ()
+  "Switching from a dedicated pi panel replaces that panel in place.
+Regression: the old `switch-to-buffer' fell back to `display-buffer'
+inside the dedicated window, which created a NEW side window for the
+target session, splitting the layout.  The panel must be taken over:
+same window, target buffer, still dedicated, slot re-keyed."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[st3]*"))
+          (b2 (get-buffer-create "*pi[st4]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[st3]*" :buffer b1 :process p1
+                                    :project-root "/tmp/" :window-slot 1))
+          (s2 (make-pi-mode-session :id "*pi[st4]*" :buffer b2 :process p2
+                                    :project-root "/tmp/" :window-slot 2))
+          (frame (selected-frame)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (display-buffer b1)
+           (let* ((panel (get-buffer-window b1 frame))
+                  (windows-before (length (window-list frame))))
+             (should panel)
+             (should (window-dedicated-p panel))
+             (select-window panel)
+             (pi-mode--switch-to-session s2)
+             ;; Same panel, new session: no split, no duplicate window.
+             (should (eq (window-buffer panel) b2))
+             (should (window-dedicated-p panel))
+             (should (eq (window-parameter panel 'window-slot) 2))
+             (should (= (length (window-list frame)) windows-before))
+             ;; The displaced session is no longer visible.
+             (should-not (get-buffer-window b1 frame))))
+       (pi-mode--unregister-session (pi-mode-session-id s1))
+       (pi-mode--unregister-session (pi-mode-session-id s2))
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
+
+(ert-deftest pi-mode-test-switch-to-session-selects-visible-target ()
+  "Switching to a visible session selects its window, no duplicate."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[st5]*"))
+          (b2 (get-buffer-create "*pi[st6]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[st5]*" :buffer b1 :process p1
+                                    :project-root "/tmp/" :window-slot 1))
+          (s2 (make-pi-mode-session :id "*pi[st6]*" :buffer b2 :process p2
+                                    :project-root "/tmp/" :window-slot 2))
+          (frame (selected-frame)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (display-buffer b1)
+           (display-buffer b2)
+           (let ((panel (get-buffer-window b2 frame)))
+             (should panel)
+             (pi-mode--switch-to-session s2)
+             (should (eq (selected-window) panel))
+             (should (= 1 (length (get-buffer-window-list b2 nil frame))))
+             (should (eq (window-buffer (selected-window)) b2))))
+       (pi-mode--unregister-session (pi-mode-session-id s1))
+       (pi-mode--unregister-session (pi-mode-session-id s2))
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
 
 (ert-deftest pi-mode-test-session-continue-launch ()
   "continue launches pi -c in a new buffer."
