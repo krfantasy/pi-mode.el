@@ -1088,14 +1088,26 @@ keying) never match a cons key and are dropped unconditionally."
 
 (defun pi-mode--hide-session-windows (&optional root)
   "Delete the windows showing pi sessions of project ROOT.
-ROOT nil hides every pi window in the selected frame's tab."
+ROOT nil hides every pi window in the selected frame's tab.
+When a session window is the frame's last window it cannot be
+deleted; its buffer is swapped out instead (next buffer, falling
+back to `*scratch*'), so the session is genuinely hidden — the
+toggle state must not claim hidden while the session stays visible."
   (dolist (win (window-list))
     (let ((session (or (pi-mode--session-by-buffer (window-buffer win))
                        (buffer-local-value 'pi-mode--session (window-buffer win)))))
       (when (and session
                  (or (null root)
                      (equal (pi-mode-session-project-root session) root)))
-        (ignore-errors (delete-window win))))))
+        (unless (ignore-errors (delete-window win) t)
+          ;; Sole window of the frame: cannot delete.  Swap in another
+          ;; buffer so the session actually hides (parity with
+          ;; `pi-mode--strip-new-tab-pi-windows').
+          (when (window-live-p win)
+            (set-window-dedicated-p win nil)
+            (switch-to-prev-buffer win 'bury)
+            (when (pi-mode--session-buffer-p (window-buffer win))
+              (set-window-buffer win (get-buffer-create "*scratch*")))))))))
 
 ;;;###autoload
 (defun pi-mode-toggle-panel ()

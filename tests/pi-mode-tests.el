@@ -3075,6 +3075,37 @@ window-selection hook cannot mask the display stamp under test."
        (kill-buffer b1) (kill-buffer b2) (kill-buffer b3)
        (delete-process p1) (delete-process p2) (delete-process p3)))))
 
+(ert-deftest pi-mode-test-toggle-panel-sole-window ()
+  "Toggle panel hides a session shown in the frame's only window.
+A sole window cannot be deleted; the hide must still swap in
+another buffer, or the toggle reports :hidden while the session
+stays visible and can never restore (state desync)."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[psole]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[psole]*" :buffer b1 :process p
+                                   :project-root "/tmp/proj-sole/" :window-slot 1))
+          (frame (selected-frame)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (set-window-buffer (selected-window) b1)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/proj-sole/")))
+             (should (equal (pi-mode-toggle-panel) :hidden))
+             ;; The session is really hidden, even though the sole
+             ;; window could not be deleted.
+             (should-not (get-buffer-window b1 frame))
+             (should (equal (pi-mode--hidden-panel-get) (list s)))
+             ;; And the toggle can restore it afterwards.
+             (should (equal (pi-mode-toggle-panel) :shown))
+             (should (get-buffer-window b1 frame))
+             (should-not (pi-mode--hidden-panel-get))))
+       (pi-mode--unregister-session "*pi[psole]*")
+       (kill-buffer b1) (delete-process p)
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
+
 (ert-deftest pi-mode-test-toggle-panel-hides-only-current-project ()
   "Hiding scopes to the current project; foreign windows stay."
   (pi-mode-test-with-mock-ghostel
