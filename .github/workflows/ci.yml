@@ -20,30 +20,39 @@ jobs:
       - name: Install ELPA packages
         run: |
           emacs -Q --batch -l package \
-            --eval "(progn \
-                      (setq package-archives \
-                            '((\"gnu\" . \"https://elpa.gnu.org/packages/\") \
-                              (\"melpa\" . \"https://melpa.org/packages/\"))) \
-                      (package-refresh-contents) \
-                      (dolist (p '(transient package-lint)) \
-                        (unless (package-installed-p p) \
-                          (package-install p))) \
-                      (let* ((desc (cadr (assq 'transient package-archive-contents))) \
-                             (cur (package-installed-p 'transient)) \
-                             (curv (if (and (consp cur) (package-desc-p (cdr cur))) \
-                                       (package-desc-version (cdr cur))))) \
-                        (unless desc (error \"transient not found in archives\")) \
-                        ;; Emacs 28-30 bundle an old transient (0.3.7 / 0.7.x)
-                        ;; whose internals the tests rely on being newer; force
-                        ;; the archive version over the bundled one.
-                        (when (or (null curv) \
-                                  (version-list-< curv (package-desc-version desc))) \
-                          (package-download-transaction \
-                           (package-compute-transaction \
-                            nil (list (list 'transient (package-desc-version desc))))))) \
-                      (package-initialize) \
-                      (princ (format \"transient: %S\n\" (package-installed-p 'transient))) \
-                      (princ (format \"package-lint: %S\n\" (package-installed-p 'package-lint))))"
+            --eval "(let ((attempts 5) (ok nil)) \
+                      (while (and (not ok) (> attempts 0)) \
+                        (setq attempts (1- attempts)) \
+                        (condition-case e \
+                            (progn \
+                                          (setq package-archives \
+                                                '((\"gnu\" . \"https://elpa.gnu.org/packages/\") \
+                                                  (\"melpa\" . \"https://melpa.org/packages/\"))) \
+                                          (package-refresh-contents) \
+                                          (dolist (p '(transient package-lint)) \
+                                            (unless (package-installed-p p) \
+                                              (package-install p))) \
+                                          (let* ((desc (cadr (assq 'transient package-archive-contents))) \
+                                                 (cur (package-installed-p 'transient)) \
+                                                 (curv (if (and (consp cur) (package-desc-p (cdr cur))) \
+                                                           (package-desc-version (cdr cur))))) \
+                                            (unless desc (error \"transient not found in archives\")) \
+                                            ;; Emacs 28-30 bundle an old transient (0.3.7 / 0.7.x)
+                                            ;; whose internals the tests rely on being newer; force
+                                            ;; the archive version over the bundled one.
+                                            (when (or (null curv) \
+                                                      (version-list-< curv (package-desc-version desc))) \
+                                              (package-download-transaction \
+                                               (package-compute-transaction \
+                                                nil (list (list 'transient (package-desc-version desc))))))) \
+                                          (package-initialize) \
+                                          (princ (format \"transient: %S\n\" (package-installed-p 'transient))) \
+                                          (princ (format \"package-lint: %S\n\" (package-installed-p 'package-lint)))
+                              (setq ok t)) \
+                          (error \
+                           (princ (format \"ELPA step failed (%d retries left): %S\n\" attempts e)) \
+                           (when (> attempts 0) (sleep-for 5)) \
+                           (when (= attempts 0) (signal (car e) (cdr e)))))))"
       - name: Install pi CLI
         run: |
           npm install --global @earendil-works/pi-coding-agent@latest
@@ -65,26 +74,35 @@ jobs:
       - name: Install ELPA packages
         run: |
           emacs -Q --batch -l package \
-            --eval "(progn \
-                      (setq package-archives \
-                            '((\"gnu\" . \"https://elpa.gnu.org/packages/\") \
-                              (\"melpa\" . \"https://melpa.org/packages/\"))) \
-                      (package-refresh-contents) \
-                      (dolist (p '(transient ghostel)) \
-                        (unless (package-installed-p p) \
-                          (package-install p))) \
-                      (let* ((desc (cadr (assq 'transient package-archive-contents))) \
-                             (cur (package-installed-p 'transient)) \
-                             (curv (if (and (consp cur) (package-desc-p (cdr cur))) \
-                                       (package-desc-version (cdr cur))))) \
-                        (unless desc (error \"transient not found in archives\")) \
-                        ;; Emacs 30 bundles an old transient whose
-                        ;; internals the menu code relies on being newer.
-                        (when (or (null curv) \
-                                  (version-list-< curv (package-desc-version desc))) \
-                          (package-download-transaction \
-                           (package-compute-transaction \
-                            nil (list (list 'transient (package-desc-version desc))))))))"
+            --eval "(let ((attempts 5) (ok nil)) \
+                      (while (and (not ok) (> attempts 0)) \
+                        (setq attempts (1- attempts)) \
+                        (condition-case e \
+                            (progn \
+                                          (setq package-archives \
+                                                '((\"gnu\" . \"https://elpa.gnu.org/packages/\") \
+                                                  (\"melpa\" . \"https://melpa.org/packages/\"))) \
+                                          (package-refresh-contents) \
+                                          (dolist (p '(transient ghostel)) \
+                                            (unless (package-installed-p p) \
+                                              (package-install p))) \
+                                          (let* ((desc (cadr (assq 'transient package-archive-contents))) \
+                                                 (cur (package-installed-p 'transient)) \
+                                                 (curv (if (and (consp cur) (package-desc-p (cdr cur))) \
+                                                           (package-desc-version (cdr cur))))) \
+                                            (unless desc (error \"transient not found in archives\")) \
+                                            ;; Emacs 30 bundles an old transient whose
+                                            ;; internals the menu code relies on being newer.
+                                            (when (or (null curv) \
+                                                      (version-list-< curv (package-desc-version desc))) \
+                                              (package-download-transaction \
+                                               (package-compute-transaction \
+                                                nil (list (list 'transient (package-desc-version desc)))))))
+                              (setq ok t)) \
+                          (error \
+                           (princ (format \"ELPA step failed (%d retries left): %S\n\" attempts e)) \
+                           (when (> attempts 0) (sleep-for 5)) \
+                           (when (= attempts 0) (signal (car e) (cdr e)))))))"
       - name: Install ghostel native module
         run: |
           emacs -Q --batch -l package --eval '(package-initialize)' \
