@@ -7,18 +7,47 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         emacs_version: [28.1, 29.4, 30.1]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: jcs090218/setup-emacs@v2
+      - uses: purcell/setup-emacs@master
         with:
           version: ${{ matrix.emacs_version }}
-      - uses: purcell/setup-elpa@v1
-        with:
-          melpa: transient package-lint
+      - name: Install ELPA packages
+        run: |
+          emacs -Q --batch -l package \
+            --eval "(progn \
+                      (setq package-archives \
+                            '((\"gnu\" . \"https://elpa.gnu.org/packages/\") \
+                              (\"melpa\" . \"https://melpa.org/packages/\"))) \
+                      (package-refresh-contents) \
+                      (dolist (p '(transient package-lint)) \
+                        (unless (package-installed-p p) \
+                          (package-install p))) \
+                      (let* ((desc (cadr (assq 'transient package-archive-contents))) \
+                             (cur (package-installed-p 'transient)) \
+                             (curv (if (and (consp cur) (package-desc-p (cdr cur))) \
+                                       (package-desc-version (cdr cur))))) \
+                        (unless desc (error \"transient not found in archives\")) \
+                        ;; Emacs 28-30 bundle an old transient (0.3.7 / 0.7.x)
+                        ;; whose internals the tests rely on being newer; force
+                        ;; the archive version over the bundled one.
+                        (when (or (null curv) \
+                                  (version-list-< curv (package-desc-version desc))) \
+                          (package-download-transaction \
+                           (package-compute-transaction \
+                            nil (list (list 'transient (package-desc-version desc))))))) \
+                      (package-initialize) \
+                      (princ (format \"transient: %S\n\" (package-installed-p 'transient))) \
+                      (princ (format \"package-lint: %S\n\" (package-installed-p 'package-lint))))"
+      - name: Install pi CLI
+        run: |
+          npm install --global @earendil-works/pi-coding-agent@0.84.2
+          pi --version
       - name: Test
         run: make test
       - name: Compile tests
@@ -30,15 +59,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: jcs090218/setup-emacs@v2
+      - uses: purcell/setup-emacs@master
         with:
           version: 30.1
-      - uses: purcell/setup-elpa@v1
-        with:
-          melpa: transient ghostel
+      - name: Install ELPA packages
+        run: |
+          emacs -Q --batch -l package \
+            --eval "(progn \
+                      (setq package-archives \
+                            '((\"gnu\" . \"https://elpa.gnu.org/packages/\") \
+                              (\"melpa\" . \"https://melpa.org/packages/\"))) \
+                      (package-refresh-contents) \
+                      (dolist (p '(transient ghostel)) \
+                        (unless (package-installed-p p) \
+                          (package-install p))) \
+                      (let* ((desc (cadr (assq 'transient package-archive-contents))) \
+                             (cur (package-installed-p 'transient)) \
+                             (curv (if (and (consp cur) (package-desc-p (cdr cur))) \
+                                       (package-desc-version (cdr cur))))) \
+                        (unless desc (error \"transient not found in archives\")) \
+                        ;; Emacs 30 bundles an old transient whose
+                        ;; internals the menu code relies on being newer.
+                        (when (or (null curv) \
+                                  (version-list-< curv (package-desc-version desc))) \
+                          (package-download-transaction \
+                           (package-compute-transaction \
+                            nil (list (list 'transient (package-desc-version desc))))))))"
+      - name: Install ghostel native module
+        run: |
+          emacs -Q --batch -l package --eval '(package-initialize)' \
+            --eval "(require 'ghostel)" \
+            --eval "(unless (ghostel-download-module) (error \"ghostel module download failed\"))"
       - name: Install pi CLI
         run: |
           npm install --global @earendil-works/pi-coding-agent@0.84.2
           pi --version
+      # pi downloads fd and rg at startup when missing, and only then
+      # installs its real submit handler; preinstall them so startup is
+      # fast and deterministic on the runner.
+      - name: Install fd and rg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep fd-find
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+          fd --version && rg --version
       - name: E2E
         run: make e2e

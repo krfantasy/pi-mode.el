@@ -41,9 +41,44 @@ buffer tail for diagnosis and returns nil."
         (accept-process-output proc 0.4)
         (sleep-for 0.05))
       (when (buffer-live-p buffer)
-        (princ (format "E2E TIMEOUT; buffer tail: %S\n"
-                       (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-                         (substring text (max 0 (- (length text) 400)))))))
+        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+          (princ (format "E2E TIMEOUT; buffer (%d chars): %S\n" (length text) text))
+          ;; Probe: ask pi to write its debug log (/debug is handled in
+          ;; the editor submit path, so the probe also tells whether key
+          ;; delivery works at all).
+          (ignore-errors
+            (with-current-buffer buffer
+              (ghostel-paste-string "/debug")
+              (ghostel-send-key "return")))
+          (sleep-for 2)
+          (when (buffer-live-p buffer)
+            (let ((text2 (buffer-substring-no-properties (point-min) (point-max))))
+              (princ (format "E2E TIMEOUT; buffer after /debug (%d chars): %S\n"
+                             (length text2) text2))))
+          ;; Diagnostic extras: pi's debug log and the model server's
+          ;; request record tell apart key-delivery, HTTP and crash
+          ;; failures on CI.
+          (let ((dbg (and (getenv "PI_CODING_AGENT_DIR")
+                          (expand-file-name "pi-debug.log"
+                                            (getenv "PI_CODING_AGENT_DIR")))))
+            (when (and dbg (file-exists-p dbg))
+              (princ (format "E2E TIMEOUT; pi-debug.log: %S\n"
+                             (with-temp-buffer
+                               (insert-file-contents dbg)
+                               (buffer-string))))))
+          (when (boundp 'pi-mode-e2e-server-requests)
+            (princ (format "E2E TIMEOUT; requests: %S\n"
+                           pi-mode-e2e-server-requests))
+            (princ (format "E2E TIMEOUT; responses: %S\n"
+                           pi-mode-e2e-server-responses)))
+          (when (boundp 'pi-mode-e2e-server-process)
+            (princ (format "E2E TIMEOUT; server alive: %S\n"
+                           (and pi-mode-e2e-server-process
+                                (process-live-p pi-mode-e2e-server-process)))))
+          (princ (format "E2E TIMEOUT; pi process: %S\n"
+                         (list :live (process-live-p proc)
+                               :status (process-status proc)
+                               :command (process-command proc))))))
       nil)))
 
 (defun pi-mode-e2e--buffer-text (buffer)
@@ -81,14 +116,24 @@ Returns (SESSION BUFFER PROCESS AGENT-DIR)."
   (setq pi-mode-e2e--agent-dirs nil))
 
 (defun pi-mode-e2e--wait-ready (proc buffer project-root)
-  "Wait until pi's TUI rendered: status bar shows PROJECT-ROOT and model."
+  "Wait until pi's TUI rendered AND startup finished.
+The status bar must show PROJECT-ROOT and the model, and no startup
+status (managed fd/rg download, startup-submit feedback) may remain:
+pi installs its real submit handler only after that, so an early
+submit would be swallowed by the startup handler and wait-reply would
+time out."
   (pi-mode-e2e--wait proc buffer
     (lambda ()
-      (let ((text (pi-mode-e2e--buffer-text buffer)))
+      (let* ((text (pi-mode-e2e--buffer-text buffer))
+             ;; pi's footer abbreviates $HOME-relative cwd to "~/...",
+             ;; e.g. ~/work/_temp/... on GitHub runners.
+             (root (abbreviate-file-name project-root)))
         (and (> (length text) 300)
-             (string-match-p (regexp-quote project-root) text)
-             (string-match-p "e2e-model" text))))
-    45))
+             (string-match-p (regexp-quote root) text)
+             (string-match-p "e2e-model" text)
+             (not (string-match-p "Startup is still in progress" text))
+             (not (string-match-p "not found. Downloading" text)))))
+    60))
 
 (defun pi-mode-e2e--wait-input (proc buffer text)
   "Wait until TEXT is visible in the input box area of pi's TUI."
@@ -157,8 +202,9 @@ tears down."
           (should (equal (with-current-buffer buffer default-directory)
                          project-root))
           (should (pi-mode-e2e--wait-ready process buffer project-root))
-          ;; The TUI status bar shows the project dir, not the caller's cwd.
-          (should (string-match-p (regexp-quote project-root)
+          ;; The TUI status bar shows the project dir (home-relative), not
+          ;; the caller's cwd.
+          (should (string-match-p (regexp-quote (abbreviate-file-name project-root))
                                   (pi-mode-e2e--buffer-text buffer)))
           ;; The isolated agent dir was honored: models.json provider loaded.
           (should (string-match-p "e2e-model"
@@ -338,10 +384,11 @@ hides and restores them."
                         (p2 (pi-mode-session-process second)))
                     (should (pi-mode-e2e--wait-ready p2 b2 project-root))
                     ;; stop from the second session's buffer: the target
-                    ;; is unambiguous and stop no longer confirms (cc-ide
-                    ;; parity)
-                    (with-current-buffer b2
-                      (pi-mode-session-stop))
+                    ;; is unambiguous; skip the confirm prompt (covered by
+                    ;; the unit suite) so batch mode does not read stdin
+                    (let ((pi-mode-confirm-quit nil))
+                      (with-current-buffer b2
+                        (pi-mode-session-stop)))
                     (pi-mode-e2e--wait p2 b2
                       (lambda () (not (process-live-p p2)))
                       15)

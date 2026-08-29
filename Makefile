@@ -40,4 +40,8 @@ e2e:
 check: test e2e
 
 lint:
-	$(EMACS) -Q --batch -l package --eval '(package-initialize)' -L . -l package-lint -f package-lint-batch-and-exit pi-mode.el
+	$(EMACS) -Q --batch -l package \
+		--eval '(package-initialize)' \
+		--eval '(add-to-list (quote package-archives) (cons "melpa" "https://melpa.org/packages/") t)' \
+		--eval '(package-refresh-contents)' \
+		-L . -l package-lint -f package-lint-batch-and-exit pi-mode.el

@@ -17,6 +17,8 @@
   "The listening server process, or nil.")
 (defvar pi-mode-e2e-server-requests nil
   "List of (METHOD PATH HEADERS BODY) recorded for each request.")
+(defvar pi-mode-e2e-server-responses nil
+  "List of response bodies sent, for timeout diagnostics.")
 (defvar pi-mode-e2e-server-last-user-text nil
   "User message text from the most recent chat completion request.")
 (defvar pi-mode-e2e-server-port nil
@@ -62,20 +64,28 @@ STREAM-P selects the SSE streaming format."
   (let ((content (pi-mode-e2e-server--reply-content user-text)))
     (if stream-p
         (concat
-         (mapconcat
-          (lambda (chunk)
-            (format "data: %s\n\n"
-                    (pi-mode-e2e-server--json-response
-                     `((id . "chatcmpl-e2e")
-                       (object . "chat.completion.chunk")
-                       (created . 0)
-                       (model . ,pi-mode-e2e-server-model-id)
-                       (choices . [((index . 0)
-                                    (delta . ,chunk)
-                                    (finish_reason . :null))])))))
-          (list `((role . "assistant") (content . ,content))
-                '((finish_reason . "stop")))
-          "")
+         ;; First chunk carries the assistant delta (finish_reason null);
+         ;; the final chunk must carry finish_reason "stop" (OpenAI SSE
+         ;; shape) or strict clients reject the response.
+         (format "data: %s\n\n"
+                 (pi-mode-e2e-server--json-response
+                  `((id . "chatcmpl-e2e")
+                    (object . "chat.completion.chunk")
+                    (created . 0)
+                    (model . ,pi-mode-e2e-server-model-id)
+                    (choices . [((index . 0)
+                                 (delta . ((role . "assistant")
+                                           (content . ,content)))
+                                 (finish_reason . :null))]))))
+         (format "data: %s\n\n"
+                 (pi-mode-e2e-server--json-response
+                  `((id . "chatcmpl-e2e")
+                    (object . "chat.completion.chunk")
+                    (created . 0)
+                    (model . ,pi-mode-e2e-server-model-id)
+                    (choices . [((index . 0)
+                                 (delta . [])
+                                 (finish_reason . "stop"))]))))
          "data: [DONE]\n\n")
       (pi-mode-e2e-server--json-response
        `((id . "chatcmpl-e2e")
@@ -117,6 +127,8 @@ STREAM-P selects the SSE streaming format."
      proc
      (format "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
              status content-type (string-bytes resp-body) resp-body))
+    ;; Record the response for timeout diagnostics.
+    (push resp-body pi-mode-e2e-server-responses)
     ;; Flush the queued response before tearing the connection down.
     (run-at-time 1 nil
                  (lambda (p) (when (process-live-p p) (delete-process p)))

@@ -98,10 +98,15 @@
 (ert-deftest pi-mode-test-project-root-from-project ()
   "Uses project-root when project.el finds a project."
   (let ((pi-mode-project-root-function nil))
-    ;; Real project-current returns (list 'vc BACKEND ROOT); the
-    ;; (transient DIR) shape's project-root is a LIST in Emacs 30.
+    ;; Emacs 28's vc project object is (vc . ROOT) and its
+    ;; project-root method is `cdr'; from Emacs 29 the object is
+    ;; (vc BACKEND ROOT) and project-root is `nth 2'.  Stub the
+    ;; shape matching the running Emacs.
     (cl-letf (((symbol-function 'project-current)
-               (lambda () (list 'vc 'Git "/tmp/proj-root/"))))
+               (lambda ()
+                 (if (version< emacs-version "29")
+                     (cons 'vc "/tmp/proj-root/")
+                   (list 'vc 'Git "/tmp/proj-root/")))))
       (should (equal (pi-mode--project-root) "/tmp/proj-root/")))))
 
 (ert-deftest pi-mode-test-session-buffer-p ()
