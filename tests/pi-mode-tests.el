@@ -4021,6 +4021,91 @@ the first session starts at slot 0."
        (pi-mode--unregister-session "*pi[pe5]*")
        (kill-buffer b) (delete-process p)))))
 
+(ert-deftest pi-mode-test-prompt-edit-cancel-deletes-window ()
+  "C-c C-k closes the popup AND the window it was displayed in.
+The popup is shown by `pop-to-buffer' in a window split off the
+current layout; killing the buffer must delete that window again,
+otherwise the split lingers showing an unrelated buffer."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe6]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe6]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (frame (selected-frame)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (insert "scrollback\n──────\nhello pi\n──────\n")
+             (cl-letf (((symbol-function 'ghostel--viewport-start)
+                        (lambda () (point-min)))
+                       ((symbol-function 'ghostel-cursor-point)
+                        (lambda () (+ (point-min) (length "scrollback\n──────\n"))))
+                       ((symbol-function 'ghostel--viewport-row-at)
+                        (lambda (_pos) 2))
+                       ((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (pi-mode-edit-prompt)))
+           (let* ((popup (get-buffer "*pi prompt *pi[pe6]**"))
+                  (popup-window (get-buffer-window popup frame)))
+             (should popup)
+             (should popup-window)
+             ;; The popup split the frame: two windows while editing.
+             (should-not (one-window-p nil frame))
+             (with-current-buffer popup
+               (pi-mode-prompt-edit-cancel))
+             (should-not (buffer-live-p popup))
+             ;; The split is gone with the buffer: layout restored.
+             (should (one-window-p nil frame))
+             (should-not (get-buffer-window popup frame))))
+       (pi-mode--unregister-session "*pi[pe6]*")
+       (kill-buffer b) (delete-process p)
+       ;; Leave the frame as we found it even when an assertion failed.
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
+
+(ert-deftest pi-mode-test-prompt-edit-submit-deletes-window ()
+  "C-c C-c syncs the prompt and closes the popup's window too."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[pe7]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[pe7]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (frame (selected-frame)))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (insert "scrollback\n──────\nhi ed\n──────\n")
+             (cl-letf (((symbol-function 'ghostel--viewport-start)
+                        (lambda () (point-min)))
+                       ((symbol-function 'ghostel-cursor-point)
+                        (lambda () (+ (point-min) (length "scrollback\n──────\n"))))
+                       ((symbol-function 'ghostel--viewport-row-at)
+                        (lambda (_pos) 2))
+                       ((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/")))
+               (pi-mode-edit-prompt)))
+           (let* ((popup (get-buffer "*pi prompt *pi[pe7]**"))
+                  (popup-window (get-buffer-window popup frame)))
+             (should popup-window)
+             (should-not (one-window-p nil frame))
+             (with-current-buffer popup
+               (pi-mode-prompt-edit-submit))
+             (should-not (buffer-live-p popup))
+             ;; Same layout guarantee as cancel: no stale split.
+             (should (one-window-p nil frame))
+             (should-not (get-buffer-window popup frame))
+             ;; And the submit still did its job.
+             (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
+                            '("c" "ctrl")))
+             (should (equal (cdr (assq 'ghostel-paste-string pi-mode-test--calls))
+                            '("hi ed")))))
+       (pi-mode--unregister-session "*pi[pe7]*")
+       (kill-buffer b) (delete-process p)
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
+
 (ert-deftest pi-mode-test-prompt-edit-keybinding ()
   "C-c C-i in pi-mode-map runs pi-mode-edit-prompt; C-c C-c / C-c C-k drive the popup."
   (should (eq (lookup-key pi-mode-map (kbd "C-c C-i")) 'pi-mode-edit-prompt))

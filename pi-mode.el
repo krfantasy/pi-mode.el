@@ -676,6 +676,18 @@ Signals `user-error' when the input box cannot be located."
     map)
   "Keymap for `pi-mode-prompt-edit-mode'.")
 
+(defun pi-mode--prompt-edit-kill-window ()
+  "Delete the window showing the prompt-edit buffer being killed.
+The popup is displayed by `pop-to-buffer', which splits the current
+layout; killing the buffer (submit, cancel, or `kill-buffer' from
+anywhere) must close that window again, restoring the pre-popup
+layout, instead of leaving a stale split behind.  Runs from
+`kill-buffer-hook' in prompt-edit buffers.  The frame's last window
+is left alone — `delete-window' signals there and Emacs shows
+another buffer in it instead."
+  (dolist (window (get-buffer-window-list (current-buffer) nil t))
+    (ignore-errors (delete-window window))))
+
 (define-minor-mode pi-mode-prompt-edit-mode
   "Minor mode for editing a pi prompt in a markdown buffer.
 
@@ -688,13 +700,18 @@ edit without touching pi."
   :lighter " π✎"
   :keymap pi-mode-prompt-edit-mode-map
   (if pi-mode-prompt-edit-mode
-      (setq-local header-line-format
-                  (substitute-command-keys
-                   (concat "*pi prompt* "
-                           (mapconcat #'identity
-                                      '("\\[pi-mode-prompt-edit-submit]: Finish"
-                                        "\\[pi-mode-prompt-edit-cancel]: Abort")
-                                      ", "))))
+      (progn
+        (setq-local header-line-format
+                    (substitute-command-keys
+                     (concat "*pi prompt* "
+                             (mapconcat #'identity
+                                        '("\\[pi-mode-prompt-edit-submit]: Finish"
+                                          "\\[pi-mode-prompt-edit-cancel]: Abort")
+                                        ", "))))
+        ;; Closing the popup must close its window too, or the split
+        ;; `pop-to-buffer' created lingers after C-c C-c / C-c C-k.
+        ;; Buffer-local, so only prompt-edit buffers are affected.
+        (add-hook 'kill-buffer-hook #'pi-mode--prompt-edit-kill-window nil t))
     (kill-local-variable 'header-line-format)))
 
 (defun pi-mode-prompt-edit-submit ()
@@ -727,7 +744,9 @@ Opens a buffer with the prompt currently in pi's input box, or
 switches to it when already open.  \\<pi-mode-prompt-edit-mode-map>
 \\[pi-mode-prompt-edit-submit] replaces the prompt in pi's input box
 with the edited text and closes the buffer; \\[pi-mode-prompt-edit-cancel]
-discards the edit.  With a prefix argument, prompts for the session."
+discards the edit.  Either way the popup's window is closed too,
+restoring the layout from before the popup opened.  With a prefix
+argument, prompts for the session."
   (interactive)
   (let* ((session (pi-mode--resolve-session current-prefix-arg))
          (name (format "*pi prompt %s*" (pi-mode-session-id session)))
