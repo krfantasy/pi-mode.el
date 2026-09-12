@@ -96,10 +96,14 @@ buffer tail for diagnosis and returns nil."
 
 (defun pi-mode-e2e--launch (project-root &optional args)
   "Launch a real pi session in PROJECT-ROOT with an isolated agent dir.
+Skills are disabled (`--no-skills'): e2e asserts pi-mode's TUI
+plumbing, and skill discovery follows the developer's HOME, which
+made the suite hang on machines with a slow/hanging skill (e.g. the
+agently-mail skill wedged pi 0.85.1's first turn with no model call).
 Returns (SESSION BUFFER PROCESS AGENT-DIR)."
   (setenv "PI_CODING_AGENT_DIR" (pi-mode-e2e--agent-dir))
   (let ((session (pi-mode--launch-buffer
-                  project-root (or args '("--tui-mode" "regular")))))
+                  project-root (or args '("--tui-mode" "regular" "--no-skills")))))
     (list session (pi-mode-session-buffer session)
           (pi-mode-session-process session)
           (getenv "PI_CODING_AGENT_DIR"))))
