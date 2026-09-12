@@ -100,7 +100,8 @@ wiped by `ghostel-mode' activation."
     (and buffer
          (buffer-live-p buffer)
          (or (buffer-local-value 'pi-mode--session buffer)
-             (gethash (buffer-name buffer) pi-mode--sessions)))))
+             (and (> (hash-table-count pi-mode--sessions) 0)
+                  (gethash (buffer-name buffer) pi-mode--sessions))))))
 
 ;;; Sessions
 
@@ -150,24 +151,46 @@ Parity with cc-ide's `claude-code-ide-terminal-initialization-delay'."
 (defvar-local pi-mode--session nil
   "The `pi-mode-session' struct for this buffer, or nil.")
 
+(defun pi-mode--maybe-install-global-hooks ()
+  "Install expensive global hooks while sessions are live.
+`kill-buffer-hook' guards and `display-buffer-alist' stay permanent
+(cheap, kill-only / early-out); per-command and window hooks are
+installed lazily so an idle Emacs pays nothing."
+  (add-hook 'post-command-hook #'pi-mode--track-selection)
+  (add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
+  (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection))
+
+(defun pi-mode--maybe-remove-global-hooks ()
+  "Remove lazy global hooks when no sessions remain."
+  (when (= 0 (hash-table-count pi-mode--sessions))
+    (remove-hook 'post-command-hook #'pi-mode--track-selection)
+    (remove-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
+    (remove-hook 'window-selection-change-functions #'pi-mode--note-window-selection)))
+
 (defun pi-mode--register-session (session)
-  (puthash (pi-mode-session-id session) session pi-mode--sessions))
+  (puthash (pi-mode-session-id session) session pi-mode--sessions)
+  (pi-mode--maybe-install-global-hooks))
 
 (defun pi-mode--unregister-session (id)
-  (remhash id pi-mode--sessions))
+  (remhash id pi-mode--sessions)
+  (pi-mode--maybe-remove-global-hooks))
 
 (defun pi-mode--active-sessions ()
-  "Return live sessions sorted by last-used, most recent first."
-  (let ((sessions (cl-loop for s being the hash-values of pi-mode--sessions collect s)))
-    (setq sessions
-          (cl-remove-if-not
-           (lambda (s)
-             (and (buffer-live-p (pi-mode-session-buffer s))
-                  (process-live-p (pi-mode-session-process s))))
-           sessions))
-    (sort sessions (lambda (a b)
-                     (time-less-p (pi-mode-session-last-used b)
-                                  (pi-mode-session-last-used a))))))
+  "Return live sessions sorted by last-used, most recent first.
+Stranded dead entries are pruned from `pi-mode--sessions' so killed
+buffers and processes can be GC'd."
+  (let ((live nil))
+    (maphash (lambda (id s)
+               (if (and (pi-mode-session-p s)
+                        (buffer-live-p (pi-mode-session-buffer s))
+                        (process-live-p (pi-mode-session-process s)))
+                   (push s live)
+                 (remhash id pi-mode--sessions)))
+             pi-mode--sessions)
+    (pi-mode--maybe-remove-global-hooks)
+    (sort live (lambda (a b)
+                 (time-less-p (pi-mode-session-last-used b)
+                              (pi-mode-session-last-used a))))))
 
 (defun pi-mode--project-sessions (&optional root)
   "Return live sessions of project ROOT, most recently used first.
@@ -233,6 +256,8 @@ then `pi-mode--cleanup-session' on exit events."
        (when (string-match-p "finished\\|exited\\|killed\\|terminated\\|deleted\\|closed" event)
          (pi-mode--cleanup-session proc event))))))
 
+(declare-function pi-mode--hidden-panel-forget-session "pi-mode" (session))
+
 (defun pi-mode--cleanup-session (process event)
   "Run session cleanup for PROCESS (idempotent).
 EVENT is the raw sentinel event string; `pi-mode-on-exit-hook'
@@ -242,6 +267,7 @@ receives it trimmed."
       (setf (pi-mode-session-cleanup-done session) t)
       (let ((buffer (pi-mode-session-buffer session)))
         (pi-mode--unregister-session (pi-mode-session-id session))
+        (pi-mode--hidden-panel-forget-session session)
         (run-hook-with-args 'pi-mode-on-exit-hook buffer (string-trim event))
         (when (and pi-mode-kill-buffer-on-exit (buffer-live-p buffer))
           (kill-buffer buffer))))))
@@ -450,15 +476,20 @@ The resolved session's `last-used' is updated (MRU semantics)."
 ;;; Kill-buffer guard
 
 (defun pi-mode--kill-buffer-guard ()
-  "Confirm before killing a live pi session buffer."
-  (when (and pi-mode--session
-             (process-live-p (pi-mode-session-process pi-mode--session))
-             pi-mode-confirm-kill
-             (not (pi-mode-session-exit-requested pi-mode--session)))
-    (unless (y-or-n-p "Kill running pi session? ")
-      (error "Aborted"))
-    (setf (pi-mode-session-exit-requested pi-mode--session) t)
-    (delete-process (pi-mode-session-process pi-mode--session))))
+  "Confirm before killing a live pi session buffer.
+When the buffer's session is already dead, unregister it and drop it
+from hidden sets so a manual kill cannot strand a registry entry."
+  (when (and pi-mode--session (pi-mode-session-p pi-mode--session))
+    (if (process-live-p (pi-mode-session-process pi-mode--session))
+        (when (and pi-mode-confirm-kill
+                   (not (pi-mode-session-exit-requested pi-mode--session)))
+          (unless (y-or-n-p "Kill running pi session? ")
+            (error "Aborted"))
+          (setf (pi-mode-session-exit-requested pi-mode--session) t)
+          (delete-process (pi-mode-session-process pi-mode--session)))
+      ;; Dead session: leave no trace in registry or hidden sets.
+      (pi-mode--unregister-session (pi-mode-session-id pi-mode--session))
+      (pi-mode--hidden-panel-forget-session pi-mode--session))))
 
 (add-hook 'kill-buffer-hook #'pi-mode--kill-buffer-guard)
 
@@ -467,9 +498,17 @@ The resolved session's `last-used' is updated (MRU semantics)."
 
 (defun pi-mode--session-live-p (session)
   "Return non-nil when SESSION has a live buffer and process."
-  (and session
+  (and (pi-mode-session-p session)
        (buffer-live-p (pi-mode-session-buffer session))
        (process-live-p (pi-mode-session-process session))))
+
+(defun pi-mode--hidden-keep-p (s)
+  "Non-nil when hidden-panel entry S must be retained.
+Real session structs are kept only while live (so dead buffers and
+processes can be GC'd); non-session placeholders are kept for
+backward compatibility."
+  (or (not (pi-mode-session-p s))
+       (pi-mode--session-live-p s)))
 
 (defun pi-mode--insert-text (session text)
   "Insert TEXT into SESSION's pi prompt input without submitting.
@@ -789,7 +828,19 @@ MCP plane (claude-code-ide-mcp.el:717-736)."
     (setq pi-mode--last-selection
           (list (current-buffer) (region-beginning) (region-end)))))
 
-(add-hook 'post-command-hook #'pi-mode--track-selection)
+(defun pi-mode--clear-selection-on-kill ()
+  "Drop `pi-mode--last-selection' when its buffer is killed.
+Runs from `kill-buffer-hook' so a killed file buffer is not pinned
+by the selection snapshot."
+  (when (and pi-mode--last-selection
+             (eq (car pi-mode--last-selection) (current-buffer)))
+    (setq pi-mode--last-selection nil)))
+
+(add-hook 'kill-buffer-hook #'pi-mode--clear-selection-on-kill)
+
+;; `post-command-hook' is installed lazily via
+;; `pi-mode--maybe-install-global-hooks' on first session, not here,
+;; so an idle Emacs pays nothing per command.
 
 ;;;###autoload
 (defun pi-mode-insert-selection ()
@@ -812,6 +863,11 @@ region to insert."
             (with-current-buffer (car pi-mode--last-selection)
               (buffer-substring-no-properties (nth 1 pi-mode--last-selection)
                                               (nth 2 pi-mode--last-selection))))
+           (pi-mode--last-selection
+            ;; Stale snapshot (buffer killed before the kill hook ran,
+            ;; e.g. predating this fix): drop the pin, then signal.
+            (setq pi-mode--last-selection nil)
+            (user-error "No active or recent region to insert"))
            (t (user-error "No active or recent region to insert")))))
       (pi-mode--insert-text session content)))
 
@@ -1052,9 +1108,12 @@ state for users without tab-bar-mode."
   "Hidden session set for the current tab and ROOT, or nil.
 ROOT defaults to the current project (`pi-mode--project-root'); the
 symbol `:all' addresses the whole-tab set used by
-`pi-mode-toggle-recent'."
-  (cdr (assoc (cons (pi-mode--current-tab-key) (or root (pi-mode--project-root)))
-              (frame-parameter nil 'pi-mode-hidden-panel))))
+`pi-mode-toggle-recent'.  Dead sessions are filtered so callers never
+resurrect a killed buffer via the hidden set."
+  (cl-remove-if-not #'pi-mode--hidden-keep-p
+                     (cdr (assoc (cons (pi-mode--current-tab-key)
+                                       (or root (pi-mode--project-root)))
+                                 (frame-parameter nil 'pi-mode-hidden-panel)))))
 
 (defun pi-mode--hidden-panel-set (sessions &optional root)
   "Remember SESSIONS as the current tab's hidden set for ROOT.
@@ -1065,13 +1124,17 @@ A nil SESSIONS drops the entry.  Entries for tabs that no longer
 exist are pruned on the way; pruning needs `tab-bar-mode', without
 which every buffer reports a synthetic tab and no real tabs exist.
 Legacy string-keyed entries (from before the (tab . project)
-keying) never match a cons key and are dropped unconditionally."
+keying) never match a cons key and are dropped unconditionally.
+Dead sessions are never stored, and dead sessions in other entries
+are pruned, so the frame parameter cannot pin killed buffers."
   (let* ((root (or root (pi-mode--project-root)))
          (key (cons (pi-mode--current-tab-key) root))
          (live-tabs (and (bound-and-true-p tab-bar-mode)
                          (fboundp 'tab-bar-tabs)
                          (mapcar (lambda (tab) (alist-get 'name (cdr tab)))
                                  (tab-bar-tabs))))
+         (sessions (and sessions
+                        (cl-remove-if-not #'pi-mode--hidden-keep-p sessions)))
          (rest (cl-remove-if (lambda (entry)
                                (or (equal (car entry) key)
                                    ;; Legacy string-keyed entries never match
@@ -1081,10 +1144,28 @@ keying) never match a cons key and are dropped unconditionally."
                                    (and live-tabs
                                         (not (member (caar entry) live-tabs)))))
                              (frame-parameter nil 'pi-mode-hidden-panel))))
+    ;; Prune dead sessions from surviving entries; drop entries left empty.
+    (setq rest
+          (cl-loop for entry in rest
+                   for kept = (cl-remove-if-not #'pi-mode--hidden-keep-p (cdr entry))
+                   when kept collect (cons (car entry) kept)))
     (set-frame-parameter nil 'pi-mode-hidden-panel
                          (if sessions
                              (cons (cons key sessions) rest)
                            rest))))
+
+(defun pi-mode--hidden-panel-forget-session (session)
+  "Remove SESSION from every hidden-panel set on the selected frame.
+Called from session cleanup so a stopped session cannot linger in
+the frame parameter and pin its buffer and process."
+  (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
+    (when entries
+      (set-frame-parameter
+       nil 'pi-mode-hidden-panel
+       (cl-loop for entry in entries
+                for kept = (cl-remove session (cdr entry))
+                for kept = (cl-remove-if-not #'pi-mode--hidden-keep-p kept)
+                when kept collect (cons (car entry) kept))))))
 
 (defun pi-mode--hide-session-windows (&optional root)
   "Delete the windows showing pi sessions of project ROOT.
@@ -1171,12 +1252,11 @@ most recently used one for target resolution."
     (unless (pi-mode-session-cleanup-done session)
       (setf (pi-mode-session-last-used session) (current-time)))))
 
-;; A plain add-hook is void-safe (add-hook on a void variable first sets
-;; it to nil): on Emacs 28/29, where tab-bar.el is not preloaded, this
-;; installs before tab-bar loads, and tab-bar's later defcustom preserves
-;; the existing value.  `with-eval-after-load' would trip package-lint.
-(add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
-(add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
+;; Lazy install via `pi-mode--maybe-install-global-hooks' on first
+;; session: a plain add-hook is void-safe (on Emacs 28/29 tab-bar.el
+;; may not be preloaded; add-hook on a void variable first sets it to
+;; nil and tab-bar's later defcustom preserves the value).
+;; `with-eval-after-load' would trip package-lint.
 
 ;;;###autoload
 (defun pi-mode-show-all (&optional all-projects)

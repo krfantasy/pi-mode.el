@@ -27,7 +27,12 @@
   (clrhash pi-mode--sessions)
   (setq pi-mode--cli-cache nil)
   (clrhash pi-mode-notifications--state)
-  (setq pi-mode-notifications nil))
+  (setq pi-mode-notifications nil)
+  ;; Keep the lazy-hook invariant: no sessions → no expensive hooks.
+  (when (fboundp 'pi-mode--maybe-remove-global-hooks)
+    (pi-mode--maybe-remove-global-hooks))
+  (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+  (setq pi-mode--last-selection nil))
 
 (defvar pi-mode-test--fake-processes nil
   "Fake processes created by the test helpers.")
@@ -4726,6 +4731,111 @@ otherwise the split lingers showing an unrelated buffer."
              (pi-mode-toggle-notifications)
              (should-not pi-mode-notifications)))
        (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-hidden-panel-drops-dead-sessions ()
+  "Hidden sets never retain dead sessions (buffer/process pin)."
+  (let ((b1 (get-buffer-create "*pi[hp-live]*"))
+        (b2 (get-buffer-create "*pi[hp-dead]*"))
+        (p1 (pi-mode-test--fake-process))
+        (p2 (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s1 (make-pi-mode-session :id "*pi[hp-live]*" :buffer b1 :process p1
+                                        :project-root "/tmp/proj-a/"
+                                        :last-used (current-time)))
+              (s2 (make-pi-mode-session :id "*pi[hp-dead]*" :buffer b2 :process p2
+                                        :project-root "/tmp/proj-a/"
+                                        :last-used (current-time))))
+          (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+          ;; Kill s2: dead buffer + dead process.
+          (delete-process p2)
+          (kill-buffer b2)
+          (pi-mode--hidden-panel-set (list s1 s2) "/tmp/proj-a/")
+          ;; Only the live session survives set+get.
+          (should (equal (pi-mode--hidden-panel-get "/tmp/proj-a/") (list s1)))
+          (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
+            (should (= (length entries) 1))
+            (should (equal (cdar entries) (list s1)))))
+      (set-frame-parameter nil 'pi-mode-hidden-panel nil)
+      (when (buffer-live-p b1) (kill-buffer b1))
+      (when (buffer-live-p b2) (kill-buffer b2))
+      (ignore-errors (delete-process p1))
+      (ignore-errors (delete-process p2)))))
+
+(ert-deftest pi-mode-test-active-sessions-prunes-dead ()
+  "active-sessions drops stranded dead entries from the registry."
+  (let ((b (get-buffer-create "*pi[prune-dead]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[prune-dead]*" :buffer b :process p
+                                       :project-root "/tmp/"
+                                       :last-used (current-time))))
+          (pi-mode--register-session s)
+          (should (= 1 (hash-table-count pi-mode--sessions)))
+          (delete-process p)
+          (kill-buffer b)
+          ;; Dead session is filtered from results…
+          (should-not (pi-mode--active-sessions))
+          ;; …and pruned from the hash so it can be GC'd.
+          (should (= 0 (hash-table-count pi-mode--sessions))))
+      (pi-mode--unregister-session "*pi[prune-dead]*")
+      (when (buffer-live-p b) (kill-buffer b))
+      (ignore-errors (delete-process p)))))
+
+(ert-deftest pi-mode-test-last-selection-cleared-on-kill ()
+  "Killing the tracked buffer drops the selection pin."
+  (let ((b (generate-new-buffer "*pi-sel-src*")))
+    (unwind-protect
+        (progn
+          (setq pi-mode--last-selection (list b 1 1))
+          (with-current-buffer b
+            ;; Simulate kill-buffer-hook (guard + clear) without
+            ;; interactive prompts.
+            (let ((pi-mode-confirm-kill nil))
+              (pi-mode--kill-buffer-guard)
+              (pi-mode--clear-selection-on-kill)))
+          (kill-buffer b)
+          (should-not pi-mode--last-selection))
+      (setq pi-mode--last-selection nil)
+      (when (buffer-live-p b) (kill-buffer b)))))
+
+(ert-deftest pi-mode-test-notifications-prune-while-disabled ()
+  "Prune runs even while notifications are disabled."
+  (pi-mode-test-with-mock-ghostel
+   (let ((pi-mode-notifications nil))
+     (puthash "/tmp/dead-proj/s.jsonl" '(10 . t) pi-mode-notifications--state)
+     (should (= 1 (hash-table-count pi-mode-notifications--state)))
+     ;; No live sessions: prune must drop the stranded entry even though
+     ;; notifications are off.
+     (pi-mode-notifications--poll)
+     (should (= 0 (hash-table-count pi-mode-notifications--state))))))
+
+(ert-deftest pi-mode-test-global-hooks-lazy ()
+  "Expensive global hooks install on first session, remove on last."
+  (let ((b (get-buffer-create "*pi[lazy-hook]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[lazy-hook]*" :buffer b :process p
+                                       :project-root "/tmp/"
+                                       :last-used (current-time))))
+          ;; Start clean: no sessions, hooks removed.
+          (clrhash pi-mode--sessions)
+          (pi-mode--maybe-remove-global-hooks)
+          (should-not (memq #'pi-mode--track-selection post-command-hook))
+          (should-not (memq #'pi-mode--note-window-selection window-selection-change-functions))
+          ;; First register installs.
+          (pi-mode--register-session s)
+          (should (memq #'pi-mode--track-selection post-command-hook))
+          (should (memq #'pi-mode--note-window-selection window-selection-change-functions))
+          ;; Last unregister removes.
+          (pi-mode--unregister-session "*pi[lazy-hook]*")
+          (should-not (memq #'pi-mode--track-selection post-command-hook))
+          (should-not (memq #'pi-mode--note-window-selection window-selection-change-functions)))
+      (pi-mode--unregister-session "*pi[lazy-hook]*")
+      (pi-mode--maybe-remove-global-hooks)
+      (when (buffer-live-p b) (kill-buffer b))
+      (ignore-errors (delete-process p))
+      ;; Restore hooks for other tests running in the same batch.
+      (pi-mode--maybe-install-global-hooks))))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here
