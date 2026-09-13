@@ -1317,11 +1317,19 @@ wrong-number-of-arguments."
       (delete-process process))))
 
 (ert-deftest pi-mode-test-switch-to-session-replaces-current-window ()
-  "Switching to a hidden session replaces the current window's buffer.
-The chosen session must land in the current panel, not split off a
-new side window (regression for the pre-fix `switch-to-buffer' path)."
+  "Switching to a hidden session shows it in a side window.
+The code window is preserved; the target lands in its side window
+with the global geometry (per-buffer geometry is covered by
+`pi-mode-test-switch-restores-geometry')."
   (pi-mode-test-with-mock-ghostel
-   (let* ((b1 (get-buffer-create "*pi[st1]*"))
+   (let* ((frame-width (frame-text-width))
+          (frame-height (frame-text-height))
+          (pi-mode-window-side 'right)
+          (pi-mode-window-width 60)
+          (pi-mode-window-height 20)
+          (pi-mode-focus-on-open nil)
+          (code (get-buffer-create "*pi[st-code]*"))
+          (b1 (get-buffer-create "*pi[st1]*"))
           (b2 (get-buffer-create "*pi[st2]*"))
           (p1 (pi-mode-test--fake-process))
           (p2 (pi-mode-test--fake-process))
@@ -1329,40 +1337,59 @@ new side window (regression for the pre-fix `switch-to-buffer' path)."
                                     :project-root "/tmp/"))
           (s2 (make-pi-mode-session :id "*pi[st2]*" :buffer b2 :process p2
                                     :project-root "/tmp/"))
-          (frame (selected-frame))
-          (win (selected-window)))
+          (frame (selected-frame)))
      (unwind-protect
          (progn
+           (ignore-errors (set-frame-width (selected-frame) 140))
+           (ignore-errors (set-frame-height (selected-frame) 50))
+           (with-current-buffer code (erase-buffer) (insert "code"))
+           (set-window-buffer (selected-window) code)
            (pi-mode--register-session s1)
            (pi-mode--register-session s2)
-           (pi-mode--switch-to-session s2)
-           (should (eq (window-buffer win) b2))
-           (should (one-window-p nil frame)))
+           (let ((before (length (window-list frame))))
+             (pi-mode--switch-to-session s2)
+             (let ((panel (get-buffer-window b2 frame)))
+               (should panel)
+               (should (eq (window-parameter panel 'window-side) 'right))
+               ;; The code window is preserved, not replaced.
+               (should (get-buffer-window code frame))
+               (should (= (length (window-list frame)) (1+ before))))))
        (pi-mode--unregister-session (pi-mode-session-id s1))
        (pi-mode--unregister-session (pi-mode-session-id s2))
-       (kill-buffer b1) (kill-buffer b2)
+       (kill-buffer b1) (kill-buffer b2) (kill-buffer code)
        (delete-process p1) (delete-process p2)
+       (ignore-errors (set-frame-width (selected-frame) frame-width))
+       (ignore-errors (set-frame-height (selected-frame) frame-height))
        (unless (one-window-p nil frame)
          (delete-other-windows))))))
 
 (ert-deftest pi-mode-test-switch-to-session-takes-over-pi-panel ()
-  "Switching from a dedicated pi panel replaces that panel in place.
-Regression: the old `switch-to-buffer' fell back to `display-buffer'
-inside the dedicated window, which created a NEW side window for the
-target session, splitting the layout.  The panel must be taken over:
-same window, target buffer, still dedicated, slot re-keyed."
+  "Switching from a pi panel replaces it with the target's geometry.
+The selected panel is removed and the target is shown via the
+side-window path, so its remembered side/size apply instead of
+inheriting the old panel's.  Window count stays flat and the
+displaced session is hidden."
   (pi-mode-test-with-mock-ghostel
-   (let* ((b1 (get-buffer-create "*pi[st3]*"))
+   (let* ((frame-width (frame-text-width))
+          (frame-height (frame-text-height))
+          (pi-mode-window-side 'right)
+          (pi-mode-window-width 60)
+          (pi-mode-window-height 20)
+          (pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[st3]*"))
           (b2 (get-buffer-create "*pi[st4]*"))
           (p1 (pi-mode-test--fake-process))
           (p2 (pi-mode-test--fake-process))
           (s1 (make-pi-mode-session :id "*pi[st3]*" :buffer b1 :process p1
                                     :project-root "/tmp/" :window-slot 1))
           (s2 (make-pi-mode-session :id "*pi[st4]*" :buffer b2 :process p2
-                                    :project-root "/tmp/" :window-slot 2))
+                                    :project-root "/tmp/" :window-slot 2
+                                    :window-side 'bottom :window-height 12))
           (frame (selected-frame)))
      (unwind-protect
          (progn
+           (ignore-errors (set-frame-width (selected-frame) 140))
+           (ignore-errors (set-frame-height (selected-frame) 50))
            (pi-mode--register-session s1)
            (pi-mode--register-session s2)
            (display-buffer b1)
@@ -1372,17 +1399,22 @@ same window, target buffer, still dedicated, slot re-keyed."
              (should (window-dedicated-p panel))
              (select-window panel)
              (pi-mode--switch-to-session s2)
-             ;; Same panel, new session: no split, no duplicate window.
-             (should (eq (window-buffer panel) b2))
-             (should (window-dedicated-p panel))
-             (should (eq (window-parameter panel 'window-slot) 2))
-             (should (= (length (window-list frame)) windows-before))
-             ;; The displaced session is no longer visible.
-             (should-not (get-buffer-window b1 frame))))
+             ;; Panel replaced, target geometry applied: no stacking.
+             (let ((target (get-buffer-window b2 frame)))
+               (should target)
+               (should (window-dedicated-p target))
+               (should (eq (window-parameter target 'window-slot) 2))
+               (should (eq (window-parameter target 'window-side) 'bottom))
+               (should (= (window-text-height target) 12))
+               (should (= (length (window-list frame)) windows-before))
+               ;; The displaced session is no longer visible.
+               (should-not (get-buffer-window b1 frame)))))
        (pi-mode--unregister-session (pi-mode-session-id s1))
        (pi-mode--unregister-session (pi-mode-session-id s2))
        (kill-buffer b1) (kill-buffer b2)
        (delete-process p1) (delete-process p2)
+       (ignore-errors (set-frame-width (selected-frame) frame-width))
+       (ignore-errors (set-frame-height (selected-frame) frame-height))
        (unless (one-window-p nil frame)
          (delete-other-windows))))))
 
@@ -2379,9 +2411,9 @@ Regression: stale use-package :config blocks calling
       (delete-process p1) (delete-process p2))))
 
 (ert-deftest pi-mode-test-window-defaults ()
-  "Window defaults match claude-code-ide.el: right side, 20 lines, 100 columns."
+  "Window defaults: right side, 30 lines, 100 columns."
   (should (eq pi-mode-window-side 'right))
-  (should (= pi-mode-window-height 20))
+  (should (= pi-mode-window-height 30))
   (should (= pi-mode-window-width 100))
   (should (eq pi-mode-focus-on-open t)))
 
@@ -2390,6 +2422,8 @@ Regression: stale use-package :config blocks calling
   (let ((b (get-buffer-create "*pi[da]*"))
         (p (pi-mode-test--fake-process)))
     (unwind-protect
+        (cl-letf (((symbol-function 'frame-text-height)
+                   (lambda (&optional _f) 50)))
         (let ((pi-mode-window-side 'bottom)
               (pi-mode-window-height 20)
               (pi-mode-window-width 100))
@@ -2409,8 +2443,20 @@ Regression: stale use-package :config blocks calling
             (pi-mode--register-session s)
             (should (equal (pi-mode--display-args b)
                            '(bottom 3 window-height 20)))
-            (pi-mode--unregister-session "*pi[da]*")))
+            (pi-mode--unregister-session "*pi[da]*"))))
       (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-display-args-clamps-height-to-frame ()
+  "A 30-line default is clamped on short frames instead of clipping."
+  (let ((b (get-buffer-create "*pi[da-clamp]*")))
+    (unwind-protect
+        (let ((pi-mode-window-side 'bottom)
+              (pi-mode-window-height 30))
+          (cl-letf (((symbol-function 'frame-text-height)
+                     (lambda (&optional _f) 24)))
+            (should (equal (pi-mode--display-args b)
+                           '(bottom 0 window-height 14)))))
+      (when (buffer-live-p b) (kill-buffer b)))))
 
 (ert-deftest pi-mode-test-display-buffer-exact-width ()
   "A left/right pi side window ends with exactly `pi-mode-window-width'
@@ -2421,14 +2467,14 @@ body columns, compensating the fringe/margin delta."
          (b (get-buffer-create "*pi[ew]*")))
     (unwind-protect
         (progn
-          (set-frame-width (selected-frame) 140)
+          (ignore-errors (set-frame-width (selected-frame) 140))
           (with-current-buffer b
             (setq-local pi-mode--session (make-pi-mode-session :id "*pi[ew]*")))
           (let ((win (display-buffer b)))
             (should (windowp win))
             (should (= (window-body-width win) 60))))
       (kill-buffer b)
-      (set-frame-width (selected-frame) frame-width))))
+      (ignore-errors (set-frame-width (selected-frame) frame-width)))))
 
 (ert-deftest pi-mode-test-display-buffer-exact-height ()
   "A top/bottom pi side window ends with exactly `pi-mode-window-height'
@@ -2439,14 +2485,14 @@ text lines."
          (b (get-buffer-create "*pi[eh]*")))
     (unwind-protect
         (progn
-          (set-frame-height (selected-frame) 50)
+          (ignore-errors (set-frame-height (selected-frame) 50))
           (with-current-buffer b
             (setq-local pi-mode--session (make-pi-mode-session :id "*pi[eh]*")))
           (let ((win (display-buffer b)))
             (should (windowp win))
             (should (= (window-text-height win) 20))))
       (kill-buffer b)
-      (set-frame-height (selected-frame) frame-height))))
+      (ignore-errors (set-frame-height (selected-frame) frame-height)))))
 
 (ert-deftest pi-mode-test-display-buffer-entry ()
   "Session buffers are displayed in a side window via the predicate condition.
@@ -4822,20 +4868,559 @@ otherwise the split lingers showing an unrelated buffer."
           (pi-mode--maybe-remove-global-hooks)
           (should-not (memq #'pi-mode--track-selection post-command-hook))
           (should-not (memq #'pi-mode--note-window-selection window-selection-change-functions))
+          (should-not (memq #'pi-mode--note-window-size-change window-size-change-functions))
           ;; First register installs.
           (pi-mode--register-session s)
           (should (memq #'pi-mode--track-selection post-command-hook))
           (should (memq #'pi-mode--note-window-selection window-selection-change-functions))
+          (should (memq #'pi-mode--note-window-size-change window-size-change-functions))
           ;; Last unregister removes.
           (pi-mode--unregister-session "*pi[lazy-hook]*")
           (should-not (memq #'pi-mode--track-selection post-command-hook))
-          (should-not (memq #'pi-mode--note-window-selection window-selection-change-functions)))
+          (should-not (memq #'pi-mode--note-window-selection window-selection-change-functions))
+          (should-not (memq #'pi-mode--note-window-size-change window-size-change-functions)))
       (pi-mode--unregister-session "*pi[lazy-hook]*")
       (pi-mode--maybe-remove-global-hooks)
       (when (buffer-live-p b) (kill-buffer b))
       (ignore-errors (delete-process p))
       ;; Restore hooks for other tests running in the same batch.
       (pi-mode--maybe-install-global-hooks))))
+
+(ert-deftest pi-mode-test-display-args-buffer-overrides ()
+  "display-args prefers per-buffer side/size overrides over globals."
+  (let ((b (get-buffer-create "*pi[over]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'frame-text-height)
+                   (lambda (&optional _f) 50)))
+        (let ((pi-mode-window-side 'right)
+              (pi-mode-window-width 100)
+              (pi-mode-window-height 20))
+          (let ((s (make-pi-mode-session :id "*pi[over]*" :buffer b :process p
+                                         :project-root "/tmp/" :window-slot 0
+                                         :window-side 'bottom :window-height 33)))
+            (pi-mode--register-session s)
+            (should (equal (pi-mode--display-args b)
+                           '(bottom 0 window-height 33)))
+            (pi-mode--unregister-session "*pi[over]*"))))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-snapshot-geometry ()
+  "Snapshot stores the window's side and relevant size into the session."
+  (let ((b (get-buffer-create "*pi[snap]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[snap]*" :buffer b :process p
+                                       :project-root "/tmp/" :window-slot 0)))
+          (pi-mode--register-session s)
+          ;; Left/right windows remember body width, not height.
+          (cl-letf (((symbol-function 'window-parameter)
+                     (lambda (_w _p) 'left))
+                    ((symbol-function 'window-body-width)
+                     (lambda (&rest _args) 77)))
+            (pi-mode--snapshot-session-geometry s 'fake-win)
+            (should (eq (pi-mode-session-window-side s) 'left))
+            (should (= (pi-mode-session-window-width s) 77)))
+          ;; Top/bottom windows remember text height, not width.
+          (cl-letf (((symbol-function 'window-parameter)
+                     (lambda (_w _p) 'bottom))
+                    ((symbol-function 'window-text-height)
+                     (lambda (&rest _args) 33)))
+            (pi-mode--snapshot-session-geometry s 'fake-win)
+            (should (eq (pi-mode-session-window-side s) 'bottom))
+            (should (= (pi-mode-session-window-height s) 33)))
+          (pi-mode--unregister-session "*pi[snap]*"))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-snapshot-plain-window-no-override ()
+  "Snapshot from a plain (non-side) window must not create overrides."
+  (let ((b (get-buffer-create "*pi[snap-plain]*"))
+        (p (pi-mode-test--fake-process))
+        (pi-mode-window-side 'right))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[snap-plain]*" :buffer b :process p
+                                       :project-root "/tmp/" :window-slot 0)))
+          (pi-mode--register-session s)
+          (cl-letf (((symbol-function 'window-parameter)
+                     (lambda (_w _p) nil))
+                    ((symbol-function 'window-body-width)
+                     (lambda (&rest _args) 140))
+                    ((symbol-function 'window-text-height)
+                     (lambda (&rest _args) 40)))
+            (pi-mode--snapshot-session-geometry s 'fake-win))
+          (should-not (pi-mode-session-window-side s))
+          (should-not (pi-mode-session-window-width s))
+          (should-not (pi-mode-session-window-height s))
+          (pi-mode--unregister-session "*pi[snap-plain]*"))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-hide-snapshots-geometry ()
+  "Hiding session windows remembers each window's side and size."
+  (let* ((pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[hide-snap]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[hide-snap]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (get-buffer-window b))
+          (cl-letf (((symbol-function 'window-parameter)
+                     (lambda (_w _p) 'right))
+                    ((symbol-function 'window-body-width)
+                     (lambda (&rest _args) 77)))
+            (pi-mode--hide-session-windows "/tmp/"))
+          (should-not (get-buffer-window b))
+          (should (eq (pi-mode-session-window-side s) 'right))
+          (should (= (pi-mode-session-window-width s) 77))
+          (pi-mode--unregister-session "*pi[hide-snap]*"))
+      (when (buffer-live-p b) (kill-buffer b))
+      (ignore-errors (delete-process p))
+      (pi-mode--unregister-session "*pi[hide-snap]*"))))
+
+(ert-deftest pi-mode-test-size-change-snapshots ()
+  "Manual resizes are remembered without a hide cycle."
+  (let* ((pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[size-chg]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[size-chg]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))    (unwind-protect
+        (progn
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (get-buffer-window b))
+          (cl-letf (((symbol-function 'window-parameter)
+                     (lambda (_w _p) 'right))
+                    ((symbol-function 'window-body-width)
+                     (lambda (&rest _args) 88)))
+            (pi-mode--note-window-size-change (selected-frame)))
+          (should (eq (pi-mode-session-window-side s) 'right))
+          (should (= (pi-mode-session-window-width s) 88))
+          (pi-mode--unregister-session "*pi[size-chg]*"))
+      (when (buffer-live-p b) (kill-buffer b))
+      (ignore-errors (delete-process p))
+      (pi-mode--unregister-session "*pi[size-chg]*"))))
+
+(ert-deftest pi-mode-test-size-change-ignores-plain-windows ()
+  "Size-change hook must not snapshot plain (non-side) windows."
+  (let ((b (get-buffer-create "*pi[size-plain]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[size-plain]*" :buffer b :process p
+                                       :project-root "/tmp/" :window-slot 0)))
+          (pi-mode--register-session s)
+          (let ((calls 0))
+            (cl-letf (((symbol-function 'window-list)
+                       (lambda (&optional _f) (list 'fake-win)))
+                      ((symbol-function 'window-buffer)
+                       (lambda (_w) b))
+                      ((symbol-function 'window-parameter)
+                       (lambda (_w _p) nil))
+                      ((symbol-function 'pi-mode--snapshot-session-geometry)
+                       (lambda (_s _w) (setq calls (1+ calls)) _s)))
+              (pi-mode--note-window-size-change (selected-frame)))
+            (should (= calls 0)))
+          (pi-mode--unregister-session "*pi[size-plain]*"))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-size-change-skips-unchanged ()
+  "Size-change hook skips snapshot when size already matches."
+  (let ((b (get-buffer-create "*pi[size-same]*"))
+        (p (pi-mode-test--fake-process)))
+    (unwind-protect
+        (let ((s (make-pi-mode-session :id "*pi[size-same]*" :buffer b :process p
+                                       :project-root "/tmp/" :window-slot 0
+                                       :window-side 'right :window-width 77)))
+          (pi-mode--register-session s)
+          (let ((calls 0))
+            (cl-letf (((symbol-function 'window-list)
+                       (lambda (&optional _f) (list 'fake-win)))
+                      ((symbol-function 'window-buffer)
+                       (lambda (_w) b))
+                      ((symbol-function 'window-parameter)
+                       (lambda (_w param)
+                         (when (eq param 'window-side) 'right)))
+                      ((symbol-function 'window-body-width)
+                       (lambda (&rest _a) 77))
+                      ((symbol-function 'pi-mode--snapshot-session-geometry)
+                       (lambda (_s _w) (setq calls (1+ calls)) _s)))
+              (pi-mode--note-window-size-change (selected-frame)))
+            (should (= calls 0)))
+          (pi-mode--unregister-session "*pi[size-same]*"))
+      (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-buffer-window-overrides ()
+  "Buffer setters store per-session overrides without touching globals."
+  (let* ((frame-width (frame-text-width))
+         (frame-height (frame-text-height))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 100)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[buf-over]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[buf-over]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (ignore-errors (set-frame-height (selected-frame) 50))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+            (with-current-buffer b
+              (pi-mode--set-buffer-window-side 'bottom)
+              (pi-mode--set-buffer-window-width 77)
+              (pi-mode--set-buffer-window-height 15))
+            (should (eq (pi-mode-session-window-side s) 'bottom))
+            (should (= (pi-mode-session-window-width s) 77))
+            (should (= (pi-mode-session-window-height s) 15))
+            (should (eq pi-mode-window-side 'right))
+            (should (= pi-mode-window-width 100))
+            (should (= pi-mode-window-height 20))
+            ;; Setters apply at once: the buffer is shown on the new side.
+            (should (eq (window-parameter (get-buffer-window b) 'window-side) 'bottom))
+            (with-current-buffer b
+              (pi-mode--reset-buffer-window))
+            (should-not (pi-mode-session-window-side s))
+            (should-not (pi-mode-session-window-width s))
+            (should-not (pi-mode-session-window-height s)))
+          (pi-mode--unregister-session "*pi[buf-over]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[buf-over]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width))
+      (ignore-errors (set-frame-height (selected-frame) frame-height)))))
+
+(ert-deftest pi-mode-test-buffer-setter-prompts-outside-pi-buffer ()
+  "Buffer setters prompt instead of guessing MRU from a code buffer."
+  (let* ((pi-mode-window-side 'right)
+         (pi-mode-window-width 100)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (code (get-buffer-create "*pi[setter-code]*"))
+         (ba (get-buffer-create "*pi[setter-a]*"))
+         (bb (get-buffer-create "*pi[setter-b]*"))
+         (pa (pi-mode-test--fake-process))
+         (pb (pi-mode-test--fake-process))
+         (sa (make-pi-mode-session :id "*pi[setter-a]*" :buffer ba :process pa
+                                   :project-root "/tmp/" :window-slot 0
+                                   :last-used (current-time)))
+         (sb (make-pi-mode-session :id "*pi[setter-b]*" :buffer bb :process pb
+                                   :project-root "/tmp/" :window-slot 1
+                                   :last-used (time-subtract (current-time)
+                                                             (seconds-to-time 60)))))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session sa)
+          (pi-mode--register-session sb)
+          (with-current-buffer ba (setq-local pi-mode--session sa))
+          (with-current-buffer bb (setq-local pi-mode--session sb))
+          (let ((prompted nil))
+            (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/"))
+                      ((symbol-function 'pi-mode--prompt-session)
+                       (lambda (_sessions) (setq prompted t) sb)))
+              (with-current-buffer code
+                (pi-mode--set-buffer-window-width 77)))
+            (should prompted)
+            (should (= (pi-mode-session-window-width sb) 77))
+            (should-not (pi-mode-session-window-width sa)))
+          (pi-mode--unregister-session "*pi[setter-a]*")
+          (pi-mode--unregister-session "*pi[setter-b]*"))
+      (ignore-errors (delete-process pa))
+      (ignore-errors (delete-process pb))
+      (when (buffer-live-p code) (kill-buffer code))
+      (when (buffer-live-p ba) (kill-buffer ba))
+      (when (buffer-live-p bb) (kill-buffer bb))
+      (when (get-buffer "*pi-hidden*") (kill-buffer "*pi-hidden*"))
+      (pi-mode--unregister-session "*pi[setter-a]*")
+      (pi-mode--unregister-session "*pi[setter-b]*")
+      (dolist (w (window-list))
+        (when (window-parameter w 'window-side)
+          (ignore-errors (delete-window w))))
+      (ignore-errors (delete-other-windows)))))
+
+(ert-deftest pi-mode-test-config-menu-buffer-entries ()
+  "The config menu exposes per-buffer side/size setters and reset."
+  (let ((suffixes (pi-mode-test--menu-suffixes 'pi-mode-config-menu)))
+    (should (equal (cdr (assoc "B" suffixes)) 'pi-mode--set-buffer-window-side))
+    (should (equal (cdr (assoc "W" suffixes)) 'pi-mode--set-buffer-window-width))
+    (should (equal (cdr (assoc "H" suffixes)) 'pi-mode--set-buffer-window-height))
+    (should (equal (cdr (assoc "R" suffixes)) 'pi-mode--reset-buffer-window))))
+
+(ert-deftest pi-mode-test-hide-restore-roundtrip ()
+  "A hidden session's geometry feeds the next display-args."
+  (let* ((pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 100)
+         (pi-mode-window-height 20)
+         (b (get-buffer-create "*pi[roundtrip]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[roundtrip]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (get-buffer-window b))
+          (cl-letf (((symbol-function 'window-parameter)
+                     (lambda (_w _p) 'bottom))
+                    ((symbol-function 'window-text-height)
+                     (lambda (&rest _args) 33)))
+            (pi-mode--hide-session-windows "/tmp/"))
+          (should-not (get-buffer-window b))
+          ;; The next display must use the remembered geometry.
+          (cl-letf (((symbol-function 'frame-text-height)
+                     (lambda (&optional _f) 50)))
+            (should (equal (pi-mode--display-args b)
+                           '(bottom 0 window-height 33))))
+          (pi-mode--unregister-session "*pi[roundtrip]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[roundtrip]*"))))
+
+(ert-deftest pi-mode-test-buffer-setter-applies-immediately ()
+  "Setting this-buffer width resizes the visible window right away."
+  (let* ((frame-width (frame-text-width))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[imm]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[imm]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (= (window-body-width (get-buffer-window b)) 60))
+          (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+            (with-current-buffer b
+              (pi-mode--set-buffer-window-width 80)))
+          (should (= (window-body-width (get-buffer-window b)) 80))
+          (pi-mode--unregister-session "*pi[imm]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[imm]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width)))))
+
+(ert-deftest pi-mode-test-buffer-side-change-no-duplicate ()
+  "Changing this-buffer side moves the window instead of duplicating it."
+  (let* ((frame-width (frame-text-width))
+         (frame-height (frame-text-height))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[mv]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[mv]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (ignore-errors (set-frame-height (selected-frame) 50))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (eq (window-parameter (get-buffer-window b) 'window-side) 'right))
+          (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+            (with-current-buffer b
+              (pi-mode--set-buffer-window-side 'bottom)
+              (pi-mode--set-buffer-window-height 12)))
+          (let ((wins (get-buffer-window-list b nil t)))
+            (should (= (length wins) 1))
+            (should (eq (window-parameter (car wins) 'window-side) 'bottom))
+            (should (= (window-text-height (car wins)) 12)))
+          (pi-mode--unregister-session "*pi[mv]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[mv]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width))
+      (ignore-errors (set-frame-height (selected-frame) frame-height)))))
+
+(ert-deftest pi-mode-test-setter-survives-hide ()
+  "A just-set side/size is what `w' hides and restores (no clobber)."
+  (let* ((frame-width (frame-text-width))
+         (frame-height (frame-text-height))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[keep]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[keep]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (ignore-errors (set-frame-height (selected-frame) 50))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+            (with-current-buffer b
+              (pi-mode--set-buffer-window-side 'bottom)
+              (pi-mode--set-buffer-window-height 12)))
+          ;; Hide via the `w' path: the remembered geometry must survive.
+          (pi-mode--hide-session-windows "/tmp/")
+          (should-not (get-buffer-window b))
+          (should (eq (pi-mode-session-window-side s) 'bottom))
+          (should (= (pi-mode-session-window-height s) 12))
+          (should (equal (pi-mode--display-args b) '(bottom 0 window-height 12)))
+          (pi-mode--unregister-session "*pi[keep]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[keep]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width))
+      (ignore-errors (set-frame-height (selected-frame) frame-height)))))
+
+(ert-deftest pi-mode-test-switch-restores-geometry ()
+  "Switching to a hidden session shows it in its side window."
+  (let* ((frame-width (frame-text-width))
+         (frame-height (frame-text-height))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (code (get-buffer-create "*pi[sw-code]*"))
+         (b (get-buffer-create "*pi[sw]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[sw]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :window-side 'bottom :window-height 12
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (ignore-errors (set-frame-height (selected-frame) 50))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (with-current-buffer code (erase-buffer) (insert "code"))
+          (set-window-buffer (selected-window) code)
+          (should-not (get-buffer-window b))
+          (pi-mode--switch-to-session s)
+          (let ((win (get-buffer-window b)))
+            (should win)
+            (should (eq (window-parameter win 'window-side) 'bottom))
+            (should (= (window-text-height win) 12))
+            ;; The code window is preserved, not replaced.
+            (should (get-buffer-window code)))
+          (pi-mode--unregister-session "*pi[sw]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (when (buffer-live-p code) (kill-buffer code))
+      (pi-mode--unregister-session "*pi[sw]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width))
+      (ignore-errors (set-frame-height (selected-frame) frame-height))
+      (when (cdr (window-list)) (delete-other-windows)))))
+
+(ert-deftest pi-mode-test-switch-plain-existing-redisplays-side ()
+  "Switch buries a plain window showing the target and uses side path."
+  (let* ((frame-width (frame-text-width))
+         (frame-height (frame-text-height))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[sw-plain]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[sw-plain]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (ignore-errors (set-frame-height (selected-frame) 50))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (when (cdr (window-list)) (delete-other-windows))
+          (set-window-dedicated-p (selected-window) nil)
+          (set-window-buffer (selected-window) b)
+          (should (get-buffer-window b))
+          (should-not (window-parameter (get-buffer-window b) 'window-side))
+          (pi-mode--switch-to-session s)
+          (let ((win (get-buffer-window b)))
+            (should win)
+            (should (eq (window-parameter win 'window-side) 'right)))
+          (pi-mode--unregister-session "*pi[sw-plain]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[sw-plain]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width))
+      (ignore-errors (set-frame-height (selected-frame) frame-height))
+      (when (cdr (window-list)) (delete-other-windows)))))
+
+(ert-deftest pi-mode-test-switch-no-stack-on-delete-fail ()
+  "Switch buries current panel when delete fails instead of stacking."
+  (let* ((pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (ba (get-buffer-create "*pi[sw-a]*"))
+         (bb (get-buffer-create "*pi[sw-b]*"))
+         (pa (pi-mode-test--fake-process))
+         (pb (pi-mode-test--fake-process))
+         (sa (make-pi-mode-session :id "*pi[sw-a]*" :buffer ba :process pa
+                                   :project-root "/tmp/" :window-slot 0
+                                   :last-used (current-time)))
+         (sb (make-pi-mode-session :id "*pi[sw-b]*" :buffer bb :process pb
+                                   :project-root "/tmp/" :window-slot 1
+                                   :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (pi-mode--register-session sa)
+          (pi-mode--register-session sb)
+          (with-current-buffer ba (setq-local pi-mode--session sa))
+          (with-current-buffer bb (setq-local pi-mode--session sb))
+          (display-buffer ba)
+          (should (get-buffer-window ba))
+          (select-window (get-buffer-window ba))
+          (let ((victim (selected-window))
+                (orig (symbol-function 'delete-window)))
+            (cl-letf (((symbol-function 'delete-window)
+                       (lambda (&optional window &rest _a)
+                         (if (eq (or window (selected-window)) victim)
+                             (error "sole window")
+                           (apply orig (cons window _a))))))
+              (pi-mode--switch-to-session sb)))
+          (should (get-buffer-window bb))
+          (should-not (get-buffer-window ba))
+          (pi-mode--unregister-session "*pi[sw-a]*")
+          (pi-mode--unregister-session "*pi[sw-b]*"))
+      (ignore-errors (delete-process pa))
+      (ignore-errors (delete-process pb))
+      (when (buffer-live-p ba) (kill-buffer ba))
+      (when (buffer-live-p bb) (kill-buffer bb))
+      (when (get-buffer "*pi-hidden*") (kill-buffer "*pi-hidden*"))
+      (pi-mode--unregister-session "*pi[sw-a]*")
+      (pi-mode--unregister-session "*pi[sw-b]*")
+      (dolist (w (window-list))
+        (when (window-parameter w 'window-side)
+          (ignore-errors (delete-window w))))
+      (ignore-errors (delete-other-windows)))))
 
 (provide 'pi-mode-tests)
 ;;; pi-mode-tests.el ends here

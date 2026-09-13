@@ -158,34 +158,50 @@ With prefix argument ALL-PROJECTS, stop the sessions of all projects."
 
 ;;;###autoload
 (defun pi-mode--switch-to-session (session)
-  "Switch to SESSION, replacing the current panel instead of splitting.
-When SESSION is already displayed in the selected frame, its window
-is selected.  Otherwise the session buffer is shown in the selected
-window: a plain window is replaced in place, and a pi side panel
-(dedicated to another session) is taken over — its dedication stays
-and its side-slot parameter is re-keyed to SESSION, so later
-displays of SESSION reuse this window instead of creating a
-duplicate.  A window dedicated to an unrelated buffer falls back to
-`display-buffer' (the normal pi side-window path).  Also stamps
-SESSION as most recently used."
+  "Switch to SESSION in its side window, restoring its side and size.
+When SESSION is already displayed in a side window of the selected
+frame, its window is selected.  A plain window showing SESSION is
+buried first so the buffer goes through the normal `display-buffer'
+side-window path and geometry is restored.  Otherwise the session
+buffer goes through the normal `display-buffer' side-window path, so
+the session's remembered side and size (or the globals) apply.  When
+the selected window is a pi side panel showing another session, that
+panel is remembered and removed first, so the target replaces it
+instead of stacking another panel alongside; when the panel cannot be
+deleted (sole window) it is buried in place.  Also stamps SESSION as
+most recently used."
   (let* ((buffer (pi-mode-session-buffer session))
          (window (selected-window))
-         (existing (get-buffer-window buffer 0)))
+         (existing (get-buffer-window buffer (selected-frame))))
     (cond
-     (existing
+     ((and existing
+           (memq (ignore-errors (window-parameter existing 'window-side))
+                 '(left right top bottom)))
       (select-window existing))
-     ((not (window-dedicated-p window))
-      (set-window-buffer window buffer))
+     (existing
+      ;; Plain window showing the target: bury it so the side-window
+      ;; path restores geometry instead of leaving a plain window.
+      (when (window-live-p existing)
+        (ignore-errors
+          (set-window-dedicated-p existing nil)
+          (switch-to-prev-buffer existing 'bury)
+          (when (eq (window-buffer existing) buffer)
+            (set-window-buffer existing (get-buffer-create "*pi-hidden*")))))
+      (display-buffer buffer))
      ((pi-mode--session-by-buffer (window-buffer window))
-      ;; Re-key the panel to the target session in place.  A plain
-      ;; `switch-to-buffer' falls back to `display-buffer' inside a
-      ;; dedicated window, which opens a NEW side window for the
-      ;; target (display-buffer-alist routing), splitting the layout.
-      (set-window-dedicated-p window nil)
-      (set-window-buffer window buffer)
-      (set-window-dedicated-p window t)
-      (set-window-parameter window 'window-slot
-                            (or (pi-mode-session-window-slot session) 0)))
+      ;; The selected window is a pi panel for another session:
+      ;; remember its geometry, remove it, then show the target via
+      ;; the side-window path with its own geometry.
+      (let ((current (pi-mode--session-by-buffer (window-buffer window))))
+        (ignore-errors (pi-mode--snapshot-session-geometry current window)))
+      (unless (ignore-errors (delete-window window) t)
+        (when (window-live-p window)
+          (ignore-errors
+            (set-window-dedicated-p window nil)
+            (switch-to-prev-buffer window 'bury)
+            (when (pi-mode--session-buffer-p (window-buffer window))
+              (set-window-buffer window (get-buffer-create "*pi-hidden*"))))))
+      (display-buffer buffer))
      (t
       (display-buffer buffer)))
     ;; MRU parity with `pi-mode--display-buffer': switching makes the

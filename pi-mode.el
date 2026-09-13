@@ -108,6 +108,7 @@ wiped by `ghostel-mode' activation."
 (cl-defstruct pi-mode-session
   "A running pi agent session."
   id name buffer process project-root last-used window-slot
+  window-side window-width window-height
   cleanup-done exit-requested)
 
 (defcustom pi-mode-cli-args nil
@@ -158,14 +159,16 @@ Parity with cc-ide's `claude-code-ide-terminal-initialization-delay'."
 installed lazily so an idle Emacs pays nothing."
   (add-hook 'post-command-hook #'pi-mode--track-selection)
   (add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
-  (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection))
+  (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
+  (add-hook 'window-size-change-functions #'pi-mode--note-window-size-change))
 
 (defun pi-mode--maybe-remove-global-hooks ()
   "Remove lazy global hooks when no sessions remain."
   (when (= 0 (hash-table-count pi-mode--sessions))
     (remove-hook 'post-command-hook #'pi-mode--track-selection)
     (remove-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
-    (remove-hook 'window-selection-change-functions #'pi-mode--note-window-selection)))
+    (remove-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
+    (remove-hook 'window-size-change-functions #'pi-mode--note-window-size-change)))
 
 (defun pi-mode--register-session (session)
   (puthash (pi-mode-session-id session) session pi-mode--sessions)
@@ -909,9 +912,12 @@ pi buffer to send it."
                  (const :tag "Right" right))
   :group 'pi)
 
-(defcustom pi-mode-window-height 20
-  "Height of the pi side window when opened on top or bottom."
+(defcustom pi-mode-window-height 30
+  "Height of the pi side window when opened on top or bottom.
+Values larger than the frame allows are clamped at display time to
+leave room for the main window."
   :type 'integer
+  :version "0.1.0"
   :group 'pi)
 
 (defcustom pi-mode-window-width 100
@@ -931,18 +937,26 @@ nil those paths keep focus where it is."
 
 (defun pi-mode--display-args (buffer)
   "Return (SIDE SLOT SIZE-KEY SIZE-VALUE) for displaying BUFFER.
-SIDE is `pi-mode-window-side'; SLOT is the session's `window-slot'
-(or 0).  On left/right sides SIZE-KEY is `window-width' and
-SIZE-VALUE a function that resizes the chosen window so its body
-width lands exactly on `pi-mode-window-width', compensating the
-fringe/margin delta; on top/bottom sides SIZE-KEY is
-`window-height' and SIZE-VALUE `pi-mode-window-height'.  Reading
+SIDE is the session's `window-side' override or `pi-mode-window-side';
+SLOT is the session's `window-slot' (or 0).  On left/right sides SIZE-KEY
+is `window-width' and SIZE-VALUE a function that resizes the chosen
+window so its body width lands exactly on the session's `window-width'
+override or `pi-mode-window-width', compensating the fringe/margin delta;
+on top/bottom sides SIZE-KEY is `window-height' and SIZE-VALUE the
+session's `window-height' override or `pi-mode-window-height', clamped
+to fit short frames (at most `frame-text-height' minus 10, floored at
+5).  Reading
 the customization at display time keeps changes live without
 re-adding a `display-buffer-alist' entry."
-  (let* ((side pi-mode-window-side)
-         (slot (or (when-let ((session (pi-mode--session-by-buffer buffer)))
-                     (pi-mode-session-window-slot session))
-                   0))
+  (let* ((session (pi-mode--session-by-buffer buffer))
+         (side (or (and session (pi-mode-session-window-side session))
+                   pi-mode-window-side))
+         (slot (or (and session (pi-mode-session-window-slot session)) 0))
+         (width (or (and session (pi-mode-session-window-width session))
+                    pi-mode-window-width))
+         (height (min (or (and session (pi-mode-session-window-height session))
+                          pi-mode-window-height)
+                      (max 5 (- (frame-text-height) 10))))
          (left-or-right (memq side '(left right))))
     (list side slot
           (if left-or-right 'window-width 'window-height)
@@ -950,12 +964,123 @@ re-adding a `display-buffer-alist' entry."
               ;; display-buffer calls the function with the chosen
               ;; window and ignores its return value; resize failures
               ;; on undersized frames are swallowed by display-buffer.
-              (lambda (win)
-                (let ((delta (- pi-mode-window-width
-                                (window-body-width win))))
-                  (unless (zerop delta)
-                    (window-resize win delta t))))
-            pi-mode-window-height))))
+              (let ((target width))
+                (lambda (win)
+                  (let ((delta (- target (window-body-width win))))
+                    (unless (zerop delta)
+                      (window-resize win delta t)))))
+            height))))
+
+(defun pi-mode--snapshot-session-geometry (session window)
+  "Remember WINDOW's side and size into SESSION's per-buffer overrides.
+Only side windows snapshot: WINDOW's `window-side' must be left, right,
+  top or bottom, otherwise overrides are left untouched so the next display
+  follows the globals.  Left/right windows store `window-body-width' into
+  the session's `window-width'; top/bottom windows store `window-text-height'
+  into `window-height'.  The other dimension is left untouched, so switching
+  sides later falls back to the global for the yet-unseen dimension.
+  Returns SESSION."
+  (when (pi-mode-session-p session)
+    (let ((wside (ignore-errors (window-parameter window 'window-side))))
+      (when (memq wside '(left right top bottom))
+        (setf (pi-mode-session-window-side session) wside)
+        (if (memq wside '(left right))
+            (when-let* ((w (ignore-errors (window-body-width window))))
+              (setf (pi-mode-session-window-width session) w))
+          (when-let* ((h (ignore-errors (window-text-height window))))
+            (setf (pi-mode-session-window-height session) h))))))
+  session)
+
+(defun pi-mode--redisplay-session (session)
+  "Show SESSION's buffer again so a geometry change applies at once.
+Windows showing the buffer on a stale side are deleted first (without
+snapshotting, so the explicit setting wins); plain windows showing the
+buffer are buried to preserve the layout.  Same-side redisplays reuse
+the window and resize it.  Returns the chosen window."
+  (when (and (pi-mode-session-p session)
+             (buffer-live-p (pi-mode-session-buffer session)))
+    (let* ((buffer (pi-mode-session-buffer session))
+           (side (or (pi-mode-session-window-side session)
+                     pi-mode-window-side)))
+      (dolist (win (get-buffer-window-list buffer nil t))
+        (let ((wside (ignore-errors (window-parameter win 'window-side))))
+          (cond
+           ((and wside (not (eq wside side)))
+            (ignore-errors (delete-window win)))
+           ((null wside)
+            (when (window-live-p win)
+              (ignore-errors
+                (set-window-dedicated-p win nil)
+                (switch-to-prev-buffer win 'bury)
+                (when (eq (window-buffer win) buffer)
+                  (set-window-buffer win (get-buffer-create "*pi-hidden*")))))))))
+      (display-buffer buffer))))
+
+(defun pi-mode--set-buffer-window-side (side)
+  "Set the current pi session's remembered window SIDE.
+SIDE is one of left, right, top or bottom and overrides
+`pi-mode-window-side' for this buffer only.  Applies immediately;
+use `pi-mode--reset-buffer-window' to follow the global again."
+  (interactive (list (intern (completing-read
+                             "This buffer side: "
+                             '("left" "right" "top" "bottom")
+                             nil t nil nil
+                             (symbol-name
+                              (or (when-let* ((s (pi-mode--session-by-buffer (current-buffer))))
+                                    (pi-mode-session-window-side s))
+                                  pi-mode-window-side))))))
+  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
+    (setf (pi-mode-session-window-side session) side)
+    (pi-mode-log "Buffer %s side set to %s"
+                 (pi-mode-session-id session) side)
+    (pi-mode--redisplay-session session)
+    side))
+
+(defun pi-mode--set-buffer-window-width (width)
+  "Set the current pi session's remembered body WIDTH (columns).
+Overrides `pi-mode-window-width' for this buffer only.  Applies when
+its side is left or right; otherwise the value is stored for a later
+side switch.  Applies immediately."
+  (interactive (list (read-number "This buffer width: "
+                                  (or (when-let* ((s (pi-mode--session-by-buffer (current-buffer))))
+                                        (pi-mode-session-window-width s))
+                                      pi-mode-window-width))))
+  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
+    (setf (pi-mode-session-window-width session) width)
+    (pi-mode-log "Buffer %s width set to %d"
+                 (pi-mode-session-id session) width)
+    (pi-mode--redisplay-session session)
+    width))
+
+(defun pi-mode--set-buffer-window-height (height)
+  "Set the current pi session's remembered text HEIGHT (lines).
+Overrides `pi-mode-window-height' for this buffer only.  Applies when
+its side is top or bottom; otherwise the value is stored for a later
+side switch.  Applies immediately."
+  (interactive (list (read-number "This buffer height: "
+                                  (or (when-let* ((s (pi-mode--session-by-buffer (current-buffer))))
+                                        (pi-mode-session-window-height s))
+                                      pi-mode-window-height))))
+  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
+    (setf (pi-mode-session-window-height session) height)
+    (pi-mode-log "Buffer %s height set to %d"
+                 (pi-mode-session-id session) height)
+    (pi-mode--redisplay-session session)
+    height))
+
+(defun pi-mode--reset-buffer-window ()
+  "Forget this pi session's remembered side and size.
+The buffer follows `pi-mode-window-side', `-width' and `-height' again
+at once."
+  (interactive)
+  (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
+    (setf (pi-mode-session-window-side session) nil
+          (pi-mode-session-window-width session) nil
+          (pi-mode-session-window-height session) nil)
+    (pi-mode-log "Buffer %s follows global window settings"
+                 (pi-mode-session-id session))
+    (pi-mode--redisplay-session session)
+    session))
 
 (defun pi-mode--display-buffer (buffer _alist)
   "Display BUFFER in a side window per `pi-mode-window-side' and size.
@@ -987,9 +1112,10 @@ most-recently-used target."
         ;; On top/bottom sides the alist `window-height' value sizes the
         ;; TOTAL height, which drifts from the text height by the mode
         ;; line; re-set the text height exactly (cc-ide parity,
-        ;; claude-code-ide.el:991-995).
+        ;; claude-code-ide.el:991-995).  SIZE-VALUE carries the
+        ;; per-buffer height override when set.
         (when (memq side '(top bottom))
-          (set-window-text-height window pi-mode-window-height))
+          (set-window-text-height window size-value))
         ;; Every display path funnels through this action function, so
         ;; selecting here implements focus-on-open for all of them
         ;; (cc-ide parity, claude-code-ide.el:987-989).
@@ -1170,16 +1296,19 @@ the frame parameter and pin its buffer and process."
 (defun pi-mode--hide-session-windows (&optional root)
   "Delete the windows showing pi sessions of project ROOT.
 ROOT nil hides every pi window in the selected frame's tab.
-When a session window is the frame's last window it cannot be
-deleted; its buffer is swapped out instead (next buffer, falling
-back to `*scratch*'), so the session is genuinely hidden — the
-toggle state must not claim hidden while the session stays visible."
+Each hidden session remembers its window's side and size, so the next
+display restores the geometry last seen.  When a session window is the
+frame's last window it cannot be deleted; its buffer is swapped out
+instead (next buffer, falling back to `*pi-hidden*'), so the session is
+genuinely hidden — the toggle state must not claim hidden while the
+session stays visible."
   (dolist (win (window-list))
     (let ((session (or (pi-mode--session-by-buffer (window-buffer win))
                        (buffer-local-value 'pi-mode--session (window-buffer win)))))
       (when (and session
                  (or (null root)
                      (equal (pi-mode-session-project-root session) root)))
+        (ignore-errors (pi-mode--snapshot-session-geometry session win))
         (unless (ignore-errors (delete-window win) t)
           ;; Sole window of the frame: cannot delete.  Swap in another
           ;; buffer so the session actually hides (parity with
@@ -1188,7 +1317,7 @@ toggle state must not claim hidden while the session stays visible."
             (set-window-dedicated-p win nil)
             (switch-to-prev-buffer win 'bury)
             (when (pi-mode--session-buffer-p (window-buffer win))
-              (set-window-buffer win (get-buffer-create "*scratch*")))))))))
+              (set-window-buffer win (get-buffer-create "*pi-hidden*")))))))))
 
 ;;;###autoload
 (defun pi-mode-toggle-panel ()
@@ -1241,7 +1370,7 @@ pi-free instead; summon sessions there explicitly."
           (set-window-dedicated-p window nil)
           (switch-to-prev-buffer window 'bury)
           (when (pi-mode--session-buffer-p (window-buffer window))
-            (set-window-buffer window (get-buffer-create "*scratch*"))))))))
+            (set-window-buffer window (get-buffer-create "*pi-hidden*"))))))))
 
 (defun pi-mode--note-window-selection (frame)
   "Stamp MRU state when a pi window gets selected in FRAME.
@@ -1251,6 +1380,27 @@ most recently used one for target resolution."
               (session (pi-mode--session-by-buffer (window-buffer window))))
     (unless (pi-mode-session-cleanup-done session)
       (setf (pi-mode-session-last-used session) (current-time)))))
+
+(defun pi-mode--note-window-size-change (frame)
+  "Remember geometry for pi windows on FRAME after a resize.
+Runs from `window-size-change-functions'; manual drags are thus
+remembered even without a hide cycle (last resize wins over explicit
+setter values).  Only side windows snapshot; windows whose side and
+size already match the stored overrides are skipped.  Snapshot errors
+are ignored so a failing measurement never breaks window resizing."
+  (dolist (win (window-list frame))
+    (when-let* ((session (pi-mode--session-by-buffer (window-buffer win)))
+                (wside (ignore-errors (window-parameter win 'window-side)))
+                ((memq wside '(left right top bottom))))
+      (let ((same (if (memq wside '(left right))
+                      (and (pi-mode-session-window-width session)
+                           (equal (ignore-errors (window-body-width win))
+                                  (pi-mode-session-window-width session)))
+                    (and (pi-mode-session-window-height session)
+                         (equal (ignore-errors (window-text-height win))
+                                (pi-mode-session-window-height session))))))
+        (unless (and (eq (pi-mode-session-window-side session) wside) same)
+          (ignore-errors (pi-mode--snapshot-session-geometry session win)))))))
 
 ;; Lazy install via `pi-mode--maybe-install-global-hooks' on first
 ;; session: a plain add-hook is void-safe (on Emacs 28/29 tab-bar.el

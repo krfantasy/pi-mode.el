@@ -106,13 +106,18 @@ move when displayed again."
 (transient-define-prefix pi-mode-config-menu ()
   "pi-mode configuration menu."
   [:description "pi-mode Configuration"
-   ["Window"
-    ("s" "Set window side" pi-mode--set-window-side)
-    ("w" "Set window width" pi-mode--set-window-width)
-    ("h" "Set window height" pi-mode--set-window-height)
+   ["Defaults (all sessions)"
+    ("s" "Set default side" pi-mode--set-window-side)
+    ("w" "Set default width" pi-mode--set-window-width)
+    ("h" "Set default height" pi-mode--set-window-height)
     ("f" "Toggle focus on open" pi-mode--toggle-focus-on-open
      :description (lambda () (format "Focus on open (%s)"
                                      (if pi-mode-focus-on-open "ON" "OFF"))))]
+   ["This session (override)"
+    ("B" "Set session side" pi-mode--set-buffer-window-side)
+    ("W" "Set session width" pi-mode--set-buffer-window-width)
+    ("H" "Set session height" pi-mode--set-buffer-window-height)
+    ("R" "Reset session override" pi-mode--reset-buffer-window)]
    ["Configure"
     ("m" "Model" pi-mode-configure-model)
     ("T" "Thinking" pi-mode-configure-thinking)
