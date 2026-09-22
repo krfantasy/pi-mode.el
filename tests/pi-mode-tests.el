@@ -4320,11 +4320,14 @@ otherwise the split lingers showing an unrelated buffer."
     `((type . "message") (message . ,msg))))
 
 (defun pi-mode-test--write-jsonl (file entries &optional append)
-  "Write ENTRIES (plists) as JSON lines to FILE; append when APPEND."
-  (with-temp-buffer
-    (dolist (entry entries)
-      (insert (json-encode entry) "\n"))
-    (write-region (point-min) (point-max) file append)))
+  "Write ENTRIES (plists) as JSON lines to FILE; append when APPEND.
+Fixture bytes are always UTF-8, independent of the environment locale,
+so multibyte content is written deterministically."
+  (let ((coding-system-for-write 'utf-8))
+    (with-temp-buffer
+      (dolist (entry entries)
+        (insert (json-encode entry) "\n"))
+      (write-region (point-min) (point-max) file append))))
 
 (defun pi-mode-test--notif-session (name _dir)
   "Register a fake session whose session dir is DIR; return the session."
@@ -4569,6 +4572,106 @@ otherwise the split lingers showing an unrelated buffer."
              (pi-mode-notifications--poll)
              (should (= 1 (length calls)))
              (should (eq (car calls) session))
+             (should (= (file-attribute-size (file-attributes file))
+                        (car (gethash file pi-mode-notifications--state))))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-multibyte-turn-completes ()
+  "Multibyte JSONL entries do not stall the scan-tail byte offset.
+Character-position arithmetic undercounts multibyte UTF-8, drifting the
+stored offset into the middle of a sequence: the garbage line fails to
+parse, the retry rewinds to the same broken offset, and every later
+completion silently stops notifying."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-mb-" t))
+          (session (pi-mode-test--notif-session "mb1" dir))
+          (file (expand-file-name "session.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
+           ;; Turn one: an ASCII user message; the first scan advances the
+           ;; offset to EOF and leaves the turn pending.
+           (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_s) (push t calls))))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             (should (cdr (gethash file pi-mode-notifications--state)))
+             (should (= (file-attribute-size (file-attributes file))
+                        (car (gethash file pi-mode-notifications--state))))
+             ;; The reply carries multibyte text (2-, 3- and 4-byte UTF-8
+             ;; sequences), then terminates with a terminal stop entry.
+             (pi-mode-test--write-jsonl
+              file
+              (list '((type . "message")
+                      (message . ((role . "assistant")
+                                  (content . "voilà: café 完了 🎉"))))
+                    (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             ;; The offset must land exactly at EOF, not mid-sequence.
+             (should (= (file-attribute-size (file-attributes file))
+                        (car (gethash file pi-mode-notifications--state))))
+             ;; The unchanged file must not re-notify.
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             ;; A later turn after the multibyte message must still notify:
+             ;; this is the stall the character-position bug produced.
+             (pi-mode-test--write-jsonl
+              file (list (pi-mode-test--msg-entry "user")) t)
+             (pi-mode-notifications--poll)
+             (pi-mode-test--write-jsonl
+              file (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 2 (length calls)))
+             (should (= (file-attribute-size (file-attributes file))
+                        (car (gethash file pi-mode-notifications--state))))))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-scan-tail-multibyte-partial-retry ()
+  "A truncated line after multibyte content retries from its byte start.
+The rewind offset must be computed in bytes: a character count would
+land inside the preceding multibyte line, so the completed entry could
+never parse and never notify."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-mb2-" t))
+          (session (pi-mode-test--notif-session "mb2" dir))
+          (file (expand-file-name "session.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t)
+                   ((symbol-function 'pi-mode-notifications--deliver)
+                    (lambda (_s) (push t calls))))
+           ;; A pending user turn; the scan lands at its end.
+           (pi-mode-test--write-jsonl
+            file (list (pi-mode-test--msg-entry "user")))
+           (pi-mode-notifications--poll)
+           (should-not calls)
+           ;; A complete multibyte assistant message, then a terminal
+           ;; entry caught mid-write — all in one scan chunk.
+           (pi-mode-test--write-jsonl
+            file
+            (list '((type . "message")
+                    (message . ((role . "assistant")
+                                (content . "一份 café 报告 🎉"))))) t)
+           (let ((restart (file-attribute-size (file-attributes file))))
+             (with-temp-buffer
+               (insert "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"")
+               (write-region (point-min) (point-max) file t))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; The retry rewound to the truncated line's own byte start.
+             (should (= restart (car (gethash file pi-mode-notifications--state))))
+             ;; Completing the same line lets the next poll parse it.
+             (with-temp-buffer
+               (insert "}}\n")
+               (write-region (point-min) (point-max) file t))
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
              (should (= (file-attribute-size (file-attributes file))
                         (car (gethash file pi-mode-notifications--state))))))
        (pi-mode-test--notif-teardown session dir)))))

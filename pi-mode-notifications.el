@@ -156,9 +156,14 @@ retries it."
               (progn
                 (goto-char (line-end-position))
                 (forward-line 1)
-                (setq next (+ start (- (point) 1))))
+                ;; The buffer holds only the tail inserted from byte
+                ;; START, so bytes consumed up to buffer position P is
+                ;; (- (position-bytes P) 1).  Character positions would
+                ;; undercount multibyte UTF-8 and drift the stored
+                ;; offset into the middle of a sequence.
+                (setq next (+ start (- (position-bytes (point)) 1))))
             ;; Unparseable line: stop here, retry from its start next poll.
-            (setq next (+ start (- line-start 1)))
+            (setq next (+ start (- (position-bytes line-start) 1)))
             (goto-char (point-max))))))
     (cons next pending)))
 
