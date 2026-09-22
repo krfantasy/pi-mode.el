@@ -2422,7 +2422,7 @@ Regression: stale use-package :config blocks calling
   (let ((b (get-buffer-create "*pi[da]*"))
         (p (pi-mode-test--fake-process)))
     (unwind-protect
-        (cl-letf (((symbol-function 'frame-text-height)
+        (cl-letf (((symbol-function 'frame-height)
                    (lambda (&optional _f) 50)))
         (let ((pi-mode-window-side 'bottom)
               (pi-mode-window-height 20)
@@ -2452,7 +2452,7 @@ Regression: stale use-package :config blocks calling
     (unwind-protect
         (let ((pi-mode-window-side 'bottom)
               (pi-mode-window-height 30))
-          (cl-letf (((symbol-function 'frame-text-height)
+          (cl-letf (((symbol-function 'frame-height)
                      (lambda (&optional _f) 24)))
             (should (equal (pi-mode--display-args b)
                            '(bottom 0 window-height 14)))))
@@ -2488,9 +2488,15 @@ text lines."
           (ignore-errors (set-frame-height (selected-frame) 50))
           (with-current-buffer b
             (setq-local pi-mode--session (make-pi-mode-session :id "*pi[eh]*")))
-          (let ((win (display-buffer b)))
-            (should (windowp win))
-            (should (= (window-text-height win) 20))))
+          ;; The clamp reads `frame-height' (total lines), which batch
+          ;; Emacs keeps frozen at the terminal size while
+          ;; `set-frame-height' above only moves the text height; stub
+          ;; it to the size the frame was just set to.
+          (cl-letf (((symbol-function 'frame-height)
+                     (lambda (&optional _f) 50)))
+            (let ((win (display-buffer b)))
+              (should (windowp win))
+              (should (= (window-text-height win) 20)))))
       (kill-buffer b)
       (ignore-errors (set-frame-height (selected-frame) frame-height)))))
 
@@ -4994,7 +5000,7 @@ never parse and never notify."
   (let ((b (get-buffer-create "*pi[over]*"))
         (p (pi-mode-test--fake-process)))
     (unwind-protect
-        (cl-letf (((symbol-function 'frame-text-height)
+        (cl-letf (((symbol-function 'frame-height)
                    (lambda (&optional _f) 50)))
         (let ((pi-mode-window-side 'right)
               (pi-mode-window-width 100)
@@ -5413,7 +5419,7 @@ hook snapshots it as a per-buffer override (existing feature)."
             (pi-mode--hide-session-windows "/tmp/"))
           (should-not (get-buffer-window b))
           ;; The next display must use the remembered geometry.
-          (cl-letf (((symbol-function 'frame-text-height)
+          (cl-letf (((symbol-function 'frame-height)
                      (lambda (&optional _f) 50)))
             (should (equal (pi-mode--display-args b)
                            '(bottom 0 window-height 33))))

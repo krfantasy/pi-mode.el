@@ -942,9 +942,8 @@ window so its body width lands exactly on the session's `window-width'
 override or `pi-mode-window-width', compensating the fringe/margin delta;
 on top/bottom sides SIZE-KEY is `window-height' and SIZE-VALUE the
 session's `window-height' override or `pi-mode-window-height', clamped
-to fit short frames (at most `frame-text-height' minus 10, floored at
-5).  Reading
-the customization at display time keeps changes live without
+to fit short frames (at most `frame-height' minus 10, floored at 5).
+Reading the customization at display time keeps changes live without
 re-adding a `display-buffer-alist' entry."
   (let* ((session (pi-mode--session-by-buffer buffer))
          (side (or (and session (pi-mode-session-window-side session))
@@ -954,7 +953,11 @@ re-adding a `display-buffer-alist' entry."
                     pi-mode-window-width))
          (height (min (or (and session (pi-mode-session-window-height session))
                           pi-mode-window-height)
-                      (max 5 (- (frame-text-height) 10))))
+                      ;; `frame-height' is the frame's total height in
+                      ;; lines, matching the unit `window-height'
+                      ;; expects; the text-area height would be pixels
+                      ;; on GUI frames and never clamp.
+                      (max 5 (- (frame-height) 10))))
          (left-or-right (memq side '(left right))))
     (list side slot
           (if left-or-right 'window-width 'window-height)
