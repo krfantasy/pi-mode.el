@@ -209,16 +209,22 @@ most recently used."
     (setf (pi-mode-session-last-used session) (current-time))))
 
 ;;;###autoload
-(defun pi-mode-list-sessions ()
-  "List live pi sessions and switch to the chosen one.
-The chosen session replaces the current panel instead of splitting
-off a new window (`pi-mode--switch-to-session')."
-  (interactive)
-  (let ((sessions (pi-mode--active-sessions)))
-    (unless sessions
-      (user-error "No running pi sessions"))
-    (let ((session (pi-mode--prompt-session sessions)))
-      (pi-mode--switch-to-session session))))
+(defun pi-mode-list-sessions (&optional all-projects)
+  "List live pi sessions of the current project and switch to the chosen one.
+With prefix argument ALL-PROJECTS, list the sessions of all
+projects.  The chosen session replaces the current panel instead of
+splitting off a new window (`pi-mode--switch-to-session')."
+  (interactive "P")
+  (let* ((root (pi-mode--project-root))
+         (sessions (if all-projects
+                       (pi-mode--active-sessions)
+                     (pi-mode--project-sessions root))))
+    (if (null sessions)
+        (if all-projects
+            (user-error "No running pi sessions")
+          (user-error "No running pi sessions in project %s" root))
+      (let ((session (pi-mode--prompt-session sessions)))
+        (pi-mode--switch-to-session session)))))
 
 ;;;###autoload
 (defun pi-mode-switch-buffer ()

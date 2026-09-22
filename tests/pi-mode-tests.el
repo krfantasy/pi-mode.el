@@ -1270,10 +1270,18 @@ wrong-number-of-arguments."
      (should-not launch-called))))
 
 (ert-deftest pi-mode-test-list-sessions-errors-without-live-sessions ()
-  "List sessions signals a user error when the registry is empty."
+  "List sessions signals user errors mirroring `pi-mode-show-all's messages."
   (pi-mode-test-with-mock-ghostel
    (clrhash pi-mode--sessions)
-   (should-error (pi-mode-list-sessions) :type 'user-error)))
+   (cl-letf (((symbol-function 'pi-mode--project-root)
+              (lambda () "/tmp/proj/")))
+     (should (equal (error-message-string
+                     (should-error (pi-mode-list-sessions) :type 'user-error))
+                    "No running pi sessions in project /tmp/proj/"))
+     (should (equal (error-message-string
+                     (should-error (pi-mode-list-sessions '(4))
+                                   :type 'user-error))
+                    "No running pi sessions")))))
 
 (ert-deftest pi-mode-test-list-sessions-switches-selected-session ()
   "List sessions switches to the session returned by the prompt."
@@ -1290,7 +1298,9 @@ wrong-number-of-arguments."
         (pi-mode-test-with-mock-ghostel
          (pi-mode--register-session s1)
          (pi-mode--register-session s2)
-         (cl-letf (((symbol-function 'pi-mode--prompt-session)
+         (cl-letf (((symbol-function 'pi-mode--project-root)
+                    (lambda () "/tmp/proj/"))
+                   ((symbol-function 'pi-mode--prompt-session)
                     (lambda (_sessions) s2))
                    ((symbol-function 'pi-mode--switch-to-session)
                     (lambda (session) (setq target session))))
@@ -1302,6 +1312,40 @@ wrong-number-of-arguments."
       (kill-buffer b2)
       (delete-process p1)
       (delete-process p2))))
+
+(ert-deftest pi-mode-test-list-sessions-project-scoped-unless-prefix ()
+  "List sessions is project-scoped by default; the prefix lists all projects."
+  (let* ((ba (get-buffer-create "*pi[list-proj-a]*"))
+         (bb (get-buffer-create "*pi[list-proj-b]*"))
+         (pa (pi-mode-test--fake-process))
+         (pb (pi-mode-test--fake-process))
+         (sa (make-pi-mode-session :id "*pi[list-proj-a]*" :buffer ba :process pa
+                                    :project-root "/tmp/proj-a/"))
+         (sb (make-pi-mode-session :id "*pi[list-proj-b]*" :buffer bb :process pb
+                                    :project-root "/tmp/proj-b/"))
+         offered)
+    (unwind-protect
+        (pi-mode-test-with-mock-ghostel
+         (pi-mode--register-session sa)
+         (pi-mode--register-session sb)
+         (cl-letf (((symbol-function 'pi-mode--project-root)
+                    (lambda () "/tmp/proj-a/"))
+                   ((symbol-function 'pi-mode--prompt-session)
+                    (lambda (sessions) (setq offered sessions) (car sessions)))
+                   ((symbol-function 'pi-mode--switch-to-session)
+                    #'ignore))
+           (pi-mode-list-sessions)
+           (should (equal offered (list sa)))
+           (pi-mode-list-sessions '(4))
+           (should (= (length offered) 2))
+           (should (memq sa offered))
+           (should (memq sb offered))))
+      (pi-mode--unregister-session (pi-mode-session-id sa))
+      (pi-mode--unregister-session (pi-mode-session-id sb))
+      (kill-buffer ba)
+      (kill-buffer bb)
+      (delete-process pa)
+      (delete-process pb))))
 
 (ert-deftest pi-mode-test-switch-buffer-switches-resolved-session ()
   "Switch buffer displays the buffer returned by session resolution."
