@@ -580,7 +580,7 @@ wrong-number-of-arguments."
           (let ((s1 (make-pi-mode-session :id "*pi[r1]*" :buffer b1 :process p1
                                           :project-root "/tmp/" :last-used (current-time)))
                 (s2 (make-pi-mode-session :id "*pi[r2]*" :buffer b2 :process p2
-                                          :project-root "/tmp/"
+                                          :project-root "/tmp/" :name "asked"
                                           :last-used (time-add (current-time) 10)))
                 ;; foreign project, most recent of all: never resolved here
                 (s3 (make-pi-mode-session :id "*pi[r3]*" :buffer b3 :process p3
@@ -598,11 +598,13 @@ wrong-number-of-arguments."
             ;; C-u always asks, even from inside a session buffer
             (with-current-buffer b1
               (cl-letf (((symbol-function 'completing-read)
-                         (lambda (&rest _) "*pi[r2]*")))
+                         (lambda (_prompt collection &rest _)
+                           (car (rassq s2 collection)))))
                 (should (eq (pi-mode--resolve-session t) s2))))
             ;; C-u prompts (mock completing-read → s2)
             (cl-letf (((symbol-function 'completing-read)
-                       (lambda (&rest _) "*pi[r2]*")))
+                       (lambda (_prompt collection &rest _)
+                         (car (rassq s2 collection)))))
               (should (eq (pi-mode--resolve-session t) s2)))
             ;; no-ask: skips prompt even with prefix, uses mru
             (cl-letf (((symbol-function 'completing-read)
@@ -636,18 +638,20 @@ wrong-number-of-arguments."
                                           :project-root "/tmp/"
                                           :last-used (current-time)))
                 (s2 (make-pi-mode-session :id "*pi[m2]*" :buffer b2 :process p2
-                                          :project-root "/tmp/"
+                                          :project-root "/tmp/" :name "older"
                                           :last-used (time-add (current-time) -100))))
             (pi-mode--register-session s1)
             (pi-mode--register-session s2)
             ;; s1 is newest; resolve s2 via the C-u prompt branch
             (cl-letf (((symbol-function 'completing-read)
-                       (lambda (&rest _) "*pi[m2]*")))
+                       (lambda (_prompt collection &rest _)
+                         (car (rassq s2 collection)))))
               (should (eq (pi-mode--resolve-session t) s2)))
             (should (eq (car (pi-mode--active-sessions)) s2))
             ;; resolving s1 again makes it MRU again
             (cl-letf (((symbol-function 'completing-read)
-                       (lambda (&rest _) "*pi[m1]*")))
+                       (lambda (_prompt collection &rest _)
+                         (car (rassq s1 collection)))))
               (should (eq (pi-mode--resolve-session t) s1)))
             (should (eq (car (pi-mode--active-sessions)) s1))
             ;; in-buffer branch also updates
@@ -729,8 +733,8 @@ wrong-number-of-arguments."
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))
 
-(ert-deftest pi-mode-test-prompt-session-id-fallback ()
-  "A raw session id still resolves (legacy callers and tests)."
+(ert-deftest pi-mode-test-prompt-session-formatted-candidate ()
+  "The formatted display string returned by `completing-read' resolves."
   (let ((b (get-buffer-create "*pi[c1]*"))
         (p (pi-mode-test--fake-process)))
     (unwind-protect
@@ -739,7 +743,7 @@ wrong-number-of-arguments."
                                        :name "refactor" :last-used (current-time))))
           (pi-mode--register-session s)
           (cl-letf (((symbol-function 'completing-read)
-                     (lambda (&rest _) "*pi[c1]*")))
+                     (lambda (&rest _) "refactor — /tmp/proj-a/ (hidden)")))
             (should (eq (pi-mode--prompt-session (list s)) s))))
       (pi-mode--unregister-session "*pi[c1]*")
       (kill-buffer b)
@@ -788,7 +792,7 @@ wrong-number-of-arguments."
                                           :project-root "/tmp/"
                                           :last-used (current-time)))
                 (s2 (make-pi-mode-session :id "*pi[ip2]*" :buffer b2 :process p2
-                                          :project-root "/tmp/"
+                                          :project-root "/tmp/" :name "newer"
                                           :last-used (time-add (current-time) 10))))
             (pi-mode--register-session s1)
             (pi-mode--register-session s2)
@@ -796,7 +800,8 @@ wrong-number-of-arguments."
             ;; completing-read → s1, overriding the MRU s2)
             (with-temp-buffer
               (cl-letf (((symbol-function 'completing-read)
-                         (lambda (&rest _) "*pi[ip1]*")))
+                         (lambda (_prompt collection &rest _)
+                           (car (rassq s1 collection)))))
                 (should (eq (pi-mode--resolve-session nil nil 'prompt) s1))))
             ;; sole session: no prompt even with intent prompt
             (pi-mode--unregister-session "*pi[ip2]*")
@@ -1791,7 +1796,7 @@ the process."
           (p1 (pi-mode-test--fake-process))
           (p2 (pi-mode-test--fake-process))
           (s1 (make-pi-mode-session :id "*pi[sp1]*" :buffer b1 :process p1
-                                    :project-root "/tmp/"
+                                    :project-root "/tmp/" :name "chosen"
                                     :last-used (current-time)))
           (s2 (make-pi-mode-session :id "*pi[sp2]*" :buffer b2 :process p2
                                     :project-root "/tmp/"
@@ -1803,7 +1808,8 @@ the process."
            (cl-letf (((symbol-function 'pi-mode--project-root)
                       (lambda () "/tmp/"))
                      ((symbol-function 'completing-read)
-                      (lambda (&rest _) "*pi[sp1]*"))
+                      (lambda (_prompt collection &rest _)
+                        (car (rassq s1 collection))))
                      (pi-mode-confirm-quit nil)
                      ((symbol-function 'y-or-n-p)
                       (lambda (&rest _) (error "stop must not confirm"))))
@@ -2057,7 +2063,7 @@ scrollback review; the session is still unregistered."
           (p1 (pi-mode-test--fake-process))
           (p2 (pi-mode-test--fake-process))
           (s1 (make-pi-mode-session :id "*pi[rp1]*" :buffer b1 :process p1
-                                    :project-root "/tmp/"
+                                    :project-root "/tmp/" :name "picked"
                                     :last-used (current-time)))
           (s2 (make-pi-mode-session :id "*pi[rp2]*" :buffer b2 :process p2
                                     :project-root "/tmp/"
@@ -2069,7 +2075,8 @@ scrollback review; the session is still unregistered."
            (cl-letf (((symbol-function 'pi-mode--project-root)
                       (lambda () "/tmp/"))
                      ((symbol-function 'completing-read)
-                      (lambda (&rest _) "*pi[rp1]*"))
+                      (lambda (_prompt collection &rest _)
+                        (car (rassq s1 collection))))
                      ((symbol-function 'pi-mode--read-instance-name)
                       (lambda (&rest _) "refactor")))
              (with-temp-buffer

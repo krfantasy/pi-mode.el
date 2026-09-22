@@ -420,8 +420,7 @@ transient without a wrong-number-of-arguments error."
   "Prompt for one of SESSIONS and return it.
 Candidates carry the display name, abbreviated project path and
 visibility state, so sessions of different projects are
-distinguishable (cc-ide parity, claude-code-ide.el:1663-1680).
-A raw session id also matches (legacy callers)."
+distinguishable (cc-ide parity, claude-code-ide.el:1663-1680)."
   (let* ((candidates
           (mapcar
            (lambda (s)
@@ -436,8 +435,7 @@ A raw session id also matches (legacy callers)."
                    s))
            sessions))
          (choice (completing-read "pi session: " candidates nil t)))
-    (or (gethash choice pi-mode--sessions)
-        (cdr (assoc choice candidates)))))
+    (cdr (assoc choice candidates))))
 
 (defun pi-mode--resolve-session (&optional prefix no-ask intent)
   "Resolve the target session for a command.
