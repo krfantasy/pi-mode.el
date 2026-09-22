@@ -1301,17 +1301,18 @@ are pruned, so the frame parameter cannot pin killed buffers."
                            rest))))
 
 (defun pi-mode--hidden-panel-forget-session (session)
-  "Remove SESSION from every hidden-panel set on the selected frame.
+  "Remove SESSION from every hidden-panel set on every frame.
 Called from session cleanup so a stopped session cannot linger in
-the frame parameter and pin its buffer and process."
-  (let ((entries (frame-parameter nil 'pi-mode-hidden-panel)))
-    (when entries
-      (set-frame-parameter
-       nil 'pi-mode-hidden-panel
-       (cl-loop for entry in entries
-                for sans = (cl-remove session (cdr entry))
-                for kept = (cl-remove-if-not #'pi-mode--hidden-keep-p sans)
-                when kept collect (cons (car entry) kept))))))
+any frame parameter and pin its buffer and process."
+  (dolist (frame (frame-list))
+    (let ((entries (frame-parameter frame 'pi-mode-hidden-panel)))
+      (when (cl-some (lambda (entry) (member session (cdr entry))) entries)
+        (set-frame-parameter
+         frame 'pi-mode-hidden-panel
+         (cl-loop for entry in entries
+                  for sans = (cl-remove session (cdr entry))
+                  for kept = (cl-remove-if-not #'pi-mode--hidden-keep-p sans)
+                  when kept collect (cons (car entry) kept)))))))
 
 (defun pi-mode--hide-session-windows (&optional root)
   "Delete the windows showing pi sessions of project ROOT.

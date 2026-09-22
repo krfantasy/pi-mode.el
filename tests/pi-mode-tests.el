@@ -3115,6 +3115,70 @@ window-selection hook cannot mask the display stamp under test."
                          '(s1)))))
     (set-frame-parameter nil 'pi-mode-hidden-panel nil)))
 
+(defun pi-mode-test--make-extra-frame ()
+  "Create a second frame for batch tests, or nil when impossible.
+Batch Emacs has no controlling terminal, so `make-frame' cannot
+default the frame's TTY; a dummy child process with a pty connection
+donates its terminal device (`process-tty-name') instead, and the
+universal `tty-type' \"xterm\" names the terminal type."
+  (condition-case nil
+      (let* ((dummy (make-process :name "pi-mode-test-pty"
+                                  :command (list "/bin/sleep" "10")
+                                  :connection-type 'pty
+                                  :buffer nil :noquery t))
+             (frame (make-frame `((tty-type . "xterm")
+                                  (tty . ,(process-tty-name dummy))))))
+        (cons frame dummy))
+    (error nil)))
+
+(ert-deftest pi-mode-test-hidden-panel-forget-session-all-frames ()
+  "forget-session prunes the session from EVERY frame's parameter.
+Frames without the parameter and entries without the session are
+untouched; entries left empty are dropped.  The extra frame is a
+real TTY frame parked on a pty from a dummy child process."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[hfs1]*"))
+          (b2 (get-buffer-create "*pi[hfs2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[hfs1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/proj-a/"))
+          (s2 (make-pi-mode-session :id "*pi[hfs2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/proj-b/"))
+          ;; Capture before make-frame: creating a frame selects it.
+          (main-frame (selected-frame))
+          (extra (pi-mode-test--make-extra-frame)))
+     (unless extra
+       (ert-skip "cannot create frames in this batch environment"))
+     (let ((extra-frame (car extra))
+           (extra-dummy (cdr extra)))
+       (unwind-protect
+           (progn
+             ;; Both frames carry s1 in an entry; non-matching entries
+             ;; and the s2 survivors must outlive the call.  make-frame
+             ;; selects the new frame, so address frames explicitly.
+             (set-frame-parameter main-frame 'pi-mode-hidden-panel
+                                  `((("t1" . "/tmp/proj-a/") ,s1 ,s2)))
+             (set-frame-parameter extra-frame 'pi-mode-hidden-panel
+                                  `((("t2" . "/tmp/proj-a/") ,s1)
+                                    (("t2" . "/tmp/proj-b/") ,s2)))
+             (pi-mode--hidden-panel-forget-session s1)
+             ;; Main frame: s1 gone, its entry-mate s2 survives;
+             ;; the entry key is untouched by forget-session.
+             (should (equal (frame-parameter main-frame
+                                             'pi-mode-hidden-panel)
+                            `((("t1" . "/tmp/proj-a/") ,s2))))
+             ;; Extra frame: the s1-only entry dropped entirely; the
+             ;; entry that never mentioned s1 survives untouched.
+             (should (equal (frame-parameter extra-frame
+                                             'pi-mode-hidden-panel)
+                            `((("t2" . "/tmp/proj-b/") ,s2)))))
+         (set-frame-parameter extra-frame 'pi-mode-hidden-panel nil)
+         (delete-frame extra-frame)
+         (delete-process extra-dummy)))
+     (kill-buffer b1) (kill-buffer b2)
+     (delete-process p1) (delete-process p2))))
+
 (ert-deftest pi-mode-test-toggle-panel-roundtrip ()
   "toggle-panel hides visible sessions and restores the same set."
   (pi-mode-test-with-mock-ghostel
