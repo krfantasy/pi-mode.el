@@ -1190,13 +1190,16 @@ slot past every live one rather than colliding."
 
 (defun pi-mode--visible-pi-window-mru ()
   "Return the visible pi side window showing the most recently used session.
-Searches the selected frame's windows on `pi-mode-window-side' whose
-buffer hosts a session; a session with no MRU stamp counts as the
-oldest.  Return nil when no pi window is visible."
+Searches the selected frame's side windows on any pi side (left, right,
+top or bottom — a session remembered on a per-buffer side counts, not
+just `pi-mode-window-side') whose buffer hosts a session; a session
+with no MRU stamp counts as the oldest.  Return nil when no pi window
+is visible."
   (let ((candidates
          (cl-remove-if-not
           (lambda (window)
-            (and (eq (window-parameter window 'window-side) pi-mode-window-side)
+            (and (memq (window-parameter window 'window-side)
+                       '(left right top bottom))
                  (pi-mode--session-by-buffer (window-buffer window))))
           (window-list))))
     (car (cl-sort candidates

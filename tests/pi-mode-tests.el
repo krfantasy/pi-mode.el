@@ -2410,6 +2410,61 @@ Regression: stale use-package :config blocks calling
       (kill-buffer b1) (kill-buffer b2)
       (delete-process p1) (delete-process p2))))
 
+(ert-deftest pi-mode-test-visible-pi-window-mru-sees-per-buffer-side ()
+  "The MRU takeover sees a session displayed on a per-buffer side.
+Regression: candidates were filtered on `pi-mode-window-side' only, so
+a session remembered on 'bottom was invisible while the global side is
+'right and the next launch stacked an extra window instead of taking
+over the visible panel.  A plain window showing a session buffer is
+never a candidate, even when that session is the more recently used
+one."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((frame-width (frame-text-width))
+          (frame-height (frame-text-height))
+          (pi-mode-window-side 'right)
+          (pi-mode-focus-on-open nil)
+          (b1 (get-buffer-create "*pi[mru-b1]*"))
+          (b2 (get-buffer-create "*pi[mru-b2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[mru-b1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/" :window-slot 0
+                                    :window-side 'bottom :window-height 12))
+          (s2 (make-pi-mode-session :id "*pi[mru-b2]*" :buffer b2 :process p2
+                                    :project-root "/tmp/" :window-slot 1))
+          (frame (selected-frame)))
+     (unwind-protect
+         (progn
+           (ignore-errors (set-frame-width (selected-frame) 140))
+           (ignore-errors (set-frame-height (selected-frame) 50))
+           (pi-mode--register-session s1)
+           (pi-mode--register-session s2)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           (with-current-buffer b2 (setq-local pi-mode--session s2))
+           ;; s1 docks on 'bottom despite the global 'right side
+           (display-buffer b1)
+           (let* ((panel (get-buffer-window b1 frame))
+                  (plain (split-window nil nil 'right)))
+             (should panel)
+             (should (eq (window-parameter panel 'window-side) 'bottom))
+             (set-window-buffer plain b2)
+             ;; s2 is the more recently used session, but its plain
+             ;; window is not a pi side window: the bottom panel wins.
+             (setf (pi-mode-session-last-used s2) (time-add (current-time) 60))
+             (should (eq (pi-mode--visible-pi-window-mru) panel)))
+           ;; With the side window gone, the plain window alone is no
+           ;; candidate either.
+           (ignore-errors (delete-window (get-buffer-window b1 frame)))
+           (should-not (pi-mode--visible-pi-window-mru)))
+       (pi-mode--unregister-session (pi-mode-session-id s1))
+       (pi-mode--unregister-session (pi-mode-session-id s2))
+       (kill-buffer b1) (kill-buffer b2)
+       (delete-process p1) (delete-process p2)
+       (ignore-errors (set-frame-width (selected-frame) frame-width))
+       (ignore-errors (set-frame-height (selected-frame) frame-height))
+       (unless (one-window-p nil frame)
+         (delete-other-windows))))))
+
 (ert-deftest pi-mode-test-window-defaults ()
   "Window defaults: right side, 30 lines, 100 columns."
   (should (eq pi-mode-window-side 'right))
