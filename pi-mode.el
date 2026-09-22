@@ -1212,10 +1212,11 @@ is visible."
 
 (defun pi-mode--launch-window-slot (session)
   "Return the side-window slot for displaying SESSION at launch.
-When a pi side window is visible, take over the slot of the window
-showing the most recently used session: the new session replaces the
-visible pi window (claude-code-ide's pre-slot single-window behavior)
-instead of stacking a new one below it.  The displaced session is
+When a pi side window is visible, SESSION takes over that panel: it
+inherits the visible window's side AND slot, so the display reuses
+the window and the new session replaces the visible pi window
+(claude-code-ide's pre-slot single-window behavior) instead of
+stacking a new panel beside or below it.  The displaced session is
 re-homed to a fresh slot in its own project block, so restoring or
 showing it later opens side by side rather than evicting the new
 session.  Without a visible pi window, fall back to a fresh slot via
@@ -1226,6 +1227,13 @@ session.  Without a visible pi window, fall back to a fresh slot via
           (setf (pi-mode-session-window-slot displaced)
                 (pi-mode--assign-window-slot
                  (pi-mode-session-project-root displaced))))
+        ;; display-buffer-in-side-window reuses a window only when both
+        ;; side and slot match, so inheriting the slot alone would leave
+        ;; SESSION stacked on `pi-mode-window-side' over the pinned
+        ;; panel; inherit the visible panel's side too.
+        (let ((wside (window-parameter window 'window-side)))
+          (when (memq wside '(left right top bottom))
+            (setf (pi-mode-session-window-side session) wside)))
         (or (window-parameter window 'window-slot) 0))
     (pi-mode--assign-window-slot (pi-mode-session-project-root session))))
 

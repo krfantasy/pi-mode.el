@@ -3814,6 +3814,65 @@ most recently used session and leaves the others in place."
        (kill-buffer b1) (kill-buffer b2)
        (delete-process p1) (delete-process p2)))))
 
+(ert-deftest pi-mode-test-launch-takeover-inherits-pinned-side ()
+  "Launching over a session pinned to another side takes over that
+panel: the new session inherits the visible window's side as well as
+its slot, so `display-buffer-in-side-window' reuses the window instead
+of stacking a second panel on `pi-mode-window-side', and the displaced
+session is re-homed to a fresh slot."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((frame-width (frame-text-width))
+          (frame-height (frame-text-height))
+          (pi-mode-window-side 'right)
+          (pi-mode-focus-on-open nil)
+          (frame (selected-frame))
+          (b1 (get-buffer-create "*pi[tob1]*"))
+          (p1 (pi-mode-test--fake-process))
+          (s1 (make-pi-mode-session :id "*pi[tob1]*" :buffer b1 :process p1
+                                    :project-root "/tmp/takeover-bottom/"
+                                    :window-slot 0 :window-side 'bottom
+                                    :window-height 12)))
+     (unwind-protect
+         (progn
+           (ignore-errors (set-frame-width (selected-frame) 140))
+           (ignore-errors (set-frame-height (selected-frame) 50))
+           (pi-mode--register-session s1)
+           (with-current-buffer b1 (setq-local pi-mode--session s1))
+           ;; s1 is visible on its pinned 'bottom side while the global
+           ;; side stays 'right
+           (let ((old-win (display-buffer b1)))
+             (should (windowp old-win))
+             (should (eq (window-parameter old-win 'window-side) 'bottom))
+             (let* ((launched (pi-mode--launch-buffer "/tmp/takeover-new/"
+                                                      pi-mode-cli-args))
+                    (buffer (pi-mode-session-buffer launched))
+                    (win (get-buffer-window buffer frame)))
+               (unwind-protect
+                   (progn
+                     ;; the new session inherited the panel's side
+                     (should (eq (pi-mode-session-window-side launched)
+                                 'bottom))
+                     ;; the panel was reused and replaced, not stacked
+                     ;; beside a fresh window on the global side
+                     (should (eq win old-win))
+                     (should (eq (window-buffer old-win) buffer))
+                     (should (eq (window-parameter old-win 'window-side)
+                                 'bottom))
+                     (should-not (get-buffer-window b1 frame))
+                     ;; the new session took over the panel's slot and the
+                     ;; displaced session was re-homed to a fresh slot
+                     (should (= (pi-mode-session-window-slot launched)
+                                (or (window-parameter old-win 'window-slot)
+                                    0)))
+                     (should-not (= (pi-mode-session-window-slot s1)
+                                    (pi-mode-session-window-slot launched))))
+                 (kill-buffer buffer)))))
+       (pi-mode--unregister-session "*pi[tob1]*")
+       (kill-buffer b1)
+       (delete-process p1)
+       (ignore-errors (set-frame-width (selected-frame) frame-width))
+       (ignore-errors (set-frame-height (selected-frame) frame-height))))))
+
 (ert-deftest pi-mode-test-restore-after-takeover-side-by-side ()
   "Re-displaying a session displaced by launch opens a new side window
 instead of evicting the launching session (no slot collision on
