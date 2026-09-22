@@ -1543,27 +1543,31 @@ call from your configuration."
 
 ;;;###autoload
 (defun pi-mode-configure-tui-mode ()
-  "Flip --tui-mode regular/fullscreen and relaunch the session."
+  "Flip --tui-mode regular/fullscreen and relaunch the session.
+The flip applies to the relaunched session only: the relaunch args
+are computed locally from `pi-mode-cli-args', which itself is left
+untouched."
   (interactive)
   (let* ((session (pi-mode--resolve-session current-prefix-arg))
-         (current (if (member "--tui-mode" pi-mode-cli-args)
-                      (cadr (member "--tui-mode" pi-mode-cli-args))
+         (value (cadr (member "--tui-mode" pi-mode-cli-args)))
+         ;; A trailing bare --tui-mode (no value, or a value that is
+         ;; neither "regular" nor "fullscreen") behaves like "regular".
+         (current (if (member value '("regular" "fullscreen"))
+                      value
                     "regular"))
-         (next (if (equal current "fullscreen") "regular" "fullscreen")))
+         (next (if (equal current "fullscreen") "regular" "fullscreen"))
+         (stripped (cl-remove "--tui-mode"
+                              (cl-remove "fullscreen"
+                                         (cl-remove "regular" pi-mode-cli-args :test #'equal)
+                                         :test #'equal)
+                              :test #'equal))
+         ;; order matters: the VALUE first, then the flag, so the list
+         ;; reads ("--tui-mode" next ...)
+         (launch-args (append (list "--tui-mode" next) stripped)))
     (when (y-or-n-p (format "Switch TUI mode to %s? The session restarts. " next))
-      (setq pi-mode-cli-args
-            (cl-remove "--tui-mode"
-                       (cl-remove "fullscreen"
-                                  (cl-remove "regular" pi-mode-cli-args :test #'equal)
-                                  :test #'equal)
-                       :test #'equal))
-      ;; order matters: push the VALUE first, then the flag, so the list
-      ;; reads ("--tui-mode" next ...)
-      (push next pi-mode-cli-args)
-      (push "--tui-mode" pi-mode-cli-args)
       (setf (pi-mode-session-exit-requested session) t)
       (delete-process (pi-mode-session-process session))
-      (pi-mode--launch-buffer (pi-mode-session-project-root session) pi-mode-cli-args)
+      (pi-mode--launch-buffer (pi-mode-session-project-root session) launch-args)
       (pi-mode-log "tui-mode switched to %s" next))))
 
 ;;;###autoload

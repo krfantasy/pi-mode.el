@@ -3916,7 +3916,8 @@ the first session starts at slot 0."
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-configure-tui-mode ()
-  "pi-mode-configure-tui-mode flips --tui-mode and relaunches."
+  "pi-mode-configure-tui-mode relaunches with the flipped --tui-mode
+value and leaves `pi-mode-cli-args' untouched."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[tu]*"))
           (p (pi-mode-test--fake-process))
@@ -3935,13 +3936,71 @@ the first session starts at slot 0."
                        ((symbol-function 'pi-mode--launch-buffer)
                         (lambda (root args &optional _name)
                           (push (list root args) launch-calls))))
-               ;; toggle regular -> fullscreen, then fullscreen -> regular
                (pi-mode-configure-tui-mode)
+               ;; the global is not mutated, so a second flip on the
+               ;; same args relaunches fullscreen again
                (pi-mode-configure-tui-mode)))
            (should (equal (nreverse launch-calls)
                           (list (list "/tmp/" '("--tui-mode" "fullscreen"))
-                                (list "/tmp/" '("--tui-mode" "regular"))))))
+                                (list "/tmp/" '("--tui-mode" "fullscreen")))))
+           (should (equal pi-mode-cli-args '("--tui-mode" "regular"))))
        (pi-mode--unregister-session "*pi[tu]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-configure-tui-mode-flip-back ()
+  "pi-mode-configure-tui-mode flips fullscreen back to regular and
+leaves `pi-mode-cli-args' untouched."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[tf]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[tf]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-cli-args '("--tui-mode" "fullscreen"))
+          (launch-calls nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       ((symbol-function 'y-or-n-p) (lambda (_) t))
+                       ((symbol-function 'delete-process) (lambda (&rest _) nil))
+                       ((symbol-function 'pi-mode--launch-buffer)
+                        (lambda (root args &optional _name)
+                          (push (list root args) launch-calls))))
+               (pi-mode-configure-tui-mode)))
+           (should (equal launch-calls
+                          (list (list "/tmp/" '("--tui-mode" "regular")))))
+           (should (equal pi-mode-cli-args '("--tui-mode" "fullscreen"))))
+       (pi-mode--unregister-session "*pi[tf]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-configure-tui-mode-bare-flag ()
+  "A trailing bare --tui-mode (no value) flips to fullscreen and
+leaves `pi-mode-cli-args' untouched."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[tb]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[tb]*" :buffer b :process p
+                                   :project-root "/tmp/"))
+          (pi-mode-cli-args '("--tui-mode"))
+          (launch-calls nil))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (with-current-buffer b
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/"))
+                       ((symbol-function 'y-or-n-p) (lambda (_) t))
+                       ((symbol-function 'delete-process) (lambda (&rest _) nil))
+                       ((symbol-function 'pi-mode--launch-buffer)
+                        (lambda (root args &optional _name)
+                          (push (list root args) launch-calls))))
+               (pi-mode-configure-tui-mode)))
+           (should (equal launch-calls
+                          (list (list "/tmp/" '("--tui-mode" "fullscreen")))))
+           (should (equal pi-mode-cli-args '("--tui-mode"))))
+       (pi-mode--unregister-session "*pi[tb]*")
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-cli-info-found ()
