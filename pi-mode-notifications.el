@@ -16,10 +16,14 @@
 ;; Turn completion is inferred from pi's session JSONL: pi records no
 ;; agent_end event outside RPC mode, but every assistant message entry
 ;; carries a terminal `stopReason' ("stop", "length", "error") when the
-;; turn ends.  A repeating timer (`pi-mode-notifications--poll') scans
-;; the .jsonl files under each live session's directory (recursively,
-;; covering pi's nested run-0/session.jsonl layout) and notifies once
-;; per completed turn.
+;; turn ends.  A repeating timer (`pi-mode-notifications--poll') groups
+;; the live sessions by their pi session directory and scans each
+;; directory's .jsonl files once (recursively, covering pi's nested
+;; run-0/session.jsonl layout), notifying once per completed turn.
+;; A directory shared by several sessions cannot attribute a completion
+;; to one of them, so the notification then names the project only and
+;; is skipped (with `pi-mode-notifications-when-visible' nil) only when
+;; every session of the directory is displayed in a window.
 ;;
 ;; Detection state is per file, (OFFSET . PENDING), in
 ;; `pi-mode-notifications--state'.  New entries are scanned in file
@@ -51,16 +55,16 @@
 
 (defcustom pi-mode-notifications nil
   "When non-nil, notify when a pi session finishes answering a turn.
-The notification fires at most once per turn; sessions whose buffer is
-displayed in a window are skipped while
-`pi-mode-notifications-when-visible' is nil."
+The notification fires at most once per turn; it is skipped while
+`pi-mode-notifications-when-visible' is nil and every watched
+session's buffer is displayed in a window (single-session behavior)."
   :type 'boolean
   :group 'pi)
 
 (defcustom pi-mode-notifications-when-visible nil
   "When non-nil, notify even when the session buffer is displayed.
-When nil, a session whose buffer is visible in a window is skipped
-(gptel-style: you are already looking at it)."
+When nil, a completion whose directory's sessions are all displayed
+in windows is skipped (gptel-style: you are already looking at it)."
   :type 'boolean
   :group 'pi)
 
@@ -71,21 +75,29 @@ next tick without re-arming."
   :type 'number
   :group 'pi)
 
-(defun pi-mode-notifications--message (session)
-  "Notification text for SESSION's completed turn."
-  (let ((project (file-name-nondirectory
-                  (directory-file-name (pi-mode-session-project-root session)))))
-    (if (pi-mode-session-name session)
-        (format "pi finished: %s (%s)" project (pi-mode-session-name session))
-      (format "pi finished: %s" project))))
+(defun pi-mode-notifications--message (sessions)
+  "Notification text for the completed turn watched by SESSIONS.
+SESSIONS are the live sessions of the directory holding the completed
+file.  A single session keeps the current text, with its name when it
+has one; two or more sessions share the directory, so the completion
+cannot be attributed to one of them and the text names the project
+only."
+  (let* ((session (car sessions))
+         (project (file-name-nondirectory
+                   (directory-file-name (pi-mode-session-project-root session)))))
+    (if (cdr sessions)
+        (format "pi finished: %s" project)
+      (if (pi-mode-session-name session)
+          (format "pi finished: %s (%s)" project (pi-mode-session-name session))
+        (format "pi finished: %s" project)))))
 
 (declare-function alert "alert")
 
-(defun pi-mode-notifications--deliver (session)
-  "Notify that SESSION finished answering a turn.
+(defun pi-mode-notifications--deliver (sessions)
+  "Notify that one of the directory's SESSIONS finished a turn.
 Uses the `alert' package when available (optional dependency);
 otherwise a message plus a ding.  Every notification is logged."
-  (let ((text (pi-mode-notifications--message session)))
+  (let ((text (pi-mode-notifications--message sessions)))
     (if (and (require 'alert nil t) (fboundp 'alert))
         (alert text :title "pi-mode")
       (progn
@@ -93,14 +105,19 @@ otherwise a message plus a ding.  Every notification is logged."
         (ding)))
     (pi-mode-log "notification: %s" text)))
 
-(defun pi-mode-notifications--maybe-deliver (session)
-  "Deliver SESSION's completion notification unless it is visible.
-When the session buffer is displayed in a window and
-`pi-mode-notifications-when-visible' is nil, the completed turn is
-marked handled without an alert — the user is already looking at it."
+(defun pi-mode-notifications--maybe-deliver (sessions)
+  "Deliver SESSIONS' completion notification unless all are visible.
+When every session of the scanned directory is displayed in a window
+and `pi-mode-notifications-when-visible' is nil, the completed turn
+is marked handled without an alert — the user is already looking at
+it.  A completion cannot be pinned to one session of a shared
+directory, so it is suppressed only when ALL of them are visible;
+single-session directories behave exactly as before."
   (unless (and (not pi-mode-notifications-when-visible)
-               (get-buffer-window (pi-mode-session-buffer session)))
-    (pi-mode-notifications--deliver session)))
+               (cl-every (lambda (session)
+                           (get-buffer-window (pi-mode-session-buffer session)))
+                         sessions))
+    (pi-mode-notifications--deliver sessions)))
 
 ;;;###autoload
 (defun pi-mode-toggle-notifications ()
@@ -115,8 +132,10 @@ Recursion covers pi's nested run-0/session.jsonl layout."
   (when (file-directory-p dir)
     (directory-files-recursively dir "\\.jsonl\\'" nil t)))
 
-(defun pi-mode-notifications--scan-tail (file start prev-pending session)
+(defun pi-mode-notifications--scan-tail (file start prev-pending sessions)
   "Scan FILE's new entries from byte START; return (NEXT-OFFSET . PENDING).
+SESSIONS are the live sessions of FILE's directory; a completion is
+attributed to all of them (see `pi-mode-notifications--maybe-deliver').
 PREV-PENDING is the state's pending flag from earlier chunks: entries are
 processed in file order on top of it — a user message sets PENDING; a
 terminal assistant message (stopReason \"stop\", \"length\" or
@@ -150,7 +169,7 @@ retries it."
                        ((and (equal role "assistant")
                              (member stop '("stop" "length" "error"))
                              pending)
-                        (pi-mode-notifications--maybe-deliver session)
+                        (pi-mode-notifications--maybe-deliver sessions)
                         (setq pending nil)))))))))
           (if ok
               (progn
@@ -202,11 +221,12 @@ lexicographically in time order."
          (or (null last-terminal)
              (and last-user (string> last-user last-terminal))))))
 
-(defun pi-mode-notifications--scan-file (file session)
-  "Scan FILE for a completed turn and notify SESSION accordingly.
-The first observation of a file (or of a rotated one that shrank)
-infers PENDING from history instead of processing entries, so stale
-completions and resumed sessions behave correctly."
+(defun pi-mode-notifications--scan-file (file sessions)
+  "Scan FILE for a completed turn and notify SESSIONS accordingly.
+SESSIONS are the live sessions of FILE's directory.  The first
+observation of a file (or of a rotated one that shrank) infers PENDING
+from history instead of processing entries, so stale completions and
+resumed sessions behave correctly."
   (ignore-errors
     (when (file-readable-p file)
       (let* ((size (file-attribute-size (file-attributes file)))
@@ -221,14 +241,14 @@ completions and resumed sessions behave correctly."
                    pi-mode-notifications--state))
          ((> size offset)
           (let ((result (pi-mode-notifications--scan-tail
-                         file offset (cdr state) session)))
+                         file offset (cdr state) sessions)))
             (puthash file (cons (car result) (cdr result))
                      pi-mode-notifications--state))))))))
 
-(defun pi-mode-notifications--scan-dir (dir session)
-  "Scan DIR's .jsonl files for SESSION."
+(defun pi-mode-notifications--scan-dir (dir sessions)
+  "Scan DIR's .jsonl files for the directory's live SESSIONS."
   (dolist (file (pi-mode-notifications--jsonl-files dir))
-    (pi-mode-notifications--scan-file file session)))
+    (pi-mode-notifications--scan-file file sessions)))
 
 (defun pi-mode-notifications--prune ()
   "Drop detection state for files outside live sessions' dirs."
@@ -248,17 +268,26 @@ completions and resumed sessions behave correctly."
 
 (defun pi-mode-notifications--poll ()
   "Check live sessions' JSONL for completed turns; notify when found.
-State for dead sessions is always pruned, even while notifications
-are disabled, so the state hash cannot pin deleted files.  The poll
-chain stops when there is nothing to watch (no live sessions and
-empty state) and restarts via `pi-mode-notifications--ensure-poll'."
+Sessions are grouped by their pi session directory and each unique
+directory is scanned once per poll, with the directory's session list
+threaded down: a completion is attributed to all of them, so no
+sibling session can be credited with another's turn (and shared
+directories are not scanned once per session).  State for dead
+sessions is always pruned, even while notifications are disabled, so
+the state hash cannot pin deleted files.  The poll chain stops when
+there is nothing to watch (no live sessions and empty state) and
+restarts via `pi-mode-notifications--ensure-poll'."
   (let ((sessions (pi-mode--active-sessions)))
     (when pi-mode-notifications
       (when sessions
-        (dolist (session sessions)
-          (pi-mode-notifications--scan-dir
-           (pi-mode--session-dir (pi-mode-session-project-root session))
-           session))))
+        (let ((by-dir (make-hash-table :test #'equal)))
+          (dolist (session sessions)
+            (push session (gethash (pi-mode--session-dir
+                                    (pi-mode-session-project-root session))
+                                   by-dir)))
+          (maphash (lambda (dir dir-sessions)
+                     (pi-mode-notifications--scan-dir dir (nreverse dir-sessions)))
+                   by-dir))))
     (pi-mode-notifications--prune)
     (setq pi-mode-notifications--timer nil)
     ;; Keep watching while there is anything to watch; otherwise let

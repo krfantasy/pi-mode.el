@@ -533,7 +533,7 @@ none."
                 (pi-mode-notifications-when-visible t)
                 (delivered nil))
             (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
-                       (lambda (session) (push session delivered))))
+                       (lambda (sessions) (push sessions delivered))))
               ;; First observation: round 1 is complete → the inference
               ;; marks it handled; no stale notification.
               (pi-mode-notifications--poll)
@@ -553,7 +553,7 @@ none."
                   (sleep-for 0.05)))
               (should delivered)
               (should (= 1 (length delivered)))
-              (should (eq (car delivered) session))
+              (should (equal (car delivered) (list session)))
               (let ((msg (pi-mode-notifications--message (car delivered))))
                 (should (string-match-p "pi finished:" msg))
                 (should (string-match-p "pi-e2e-proj" msg)))

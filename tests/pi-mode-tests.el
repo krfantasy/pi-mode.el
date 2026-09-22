@@ -4401,12 +4401,14 @@ so multibyte content is written deterministically."
     s))
 
 (defun pi-mode-test--notif-teardown (session dir)
-  "Unregister SESSION, kill its fixtures and DIR, reset poll state."
+  "Unregister SESSION, kill its fixtures and DIR, reset poll state.
+Safe to call once per session of a shared DIR: the directory deletion
+is ignored when a previous call already removed it."
   (pi-mode--unregister-session (pi-mode-session-id session))
   (when (buffer-live-p (pi-mode-session-buffer session))
     (kill-buffer (pi-mode-session-buffer session)))
   (ignore-errors (delete-process (pi-mode-session-process session)))
-  (delete-directory dir t)
+  (ignore-errors (delete-directory dir t))
   (clrhash pi-mode-notifications--state))
 
 (ert-deftest pi-mode-test-notifications-completion ()
@@ -4426,7 +4428,7 @@ so multibyte content is written deterministically."
              (list '((type . "session"))
                    (pi-mode-test--msg-entry "user")))
            (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
-                      (lambda (session) (push session calls))))
+                      (lambda (sessions) (push sessions calls))))
              (pi-mode-notifications--poll)
              (should-not calls)
              ;; The turn completes: toolUse/toolResult interleave, then stop.
@@ -4436,8 +4438,8 @@ so multibyte content is written deterministically."
                      (pi-mode-test--msg-entry "assistant" "stop")) t)
              (pi-mode-notifications--poll)
              (should (= 1 (length calls)))
-             (should (eq (car calls) session))
-             (should (equal (pi-mode-notifications--message session)
+             (should (equal (car calls) (list session)))
+             (should (equal (pi-mode-notifications--message (list session))
                             "pi finished: notif-proj"))
              ;; Pending cleared: nothing more to notify.
              (pi-mode-notifications--poll)
@@ -4632,7 +4634,7 @@ so multibyte content is written deterministically."
                (write-region (point-min) (point-max) file t))
              (pi-mode-notifications--poll)
              (should (= 1 (length calls)))
-             (should (eq (car calls) session))
+             (should (equal (car calls) (list session)))
              (should (= (file-attribute-size (file-attributes file))
                         (car (gethash file pi-mode-notifications--state))))))
        (pi-mode-test--notif-teardown session dir)))))
@@ -4805,9 +4807,9 @@ never parse and never notify."
          (cl-letf (((symbol-function 'get-buffer-window)
                     (lambda (&rest _) 'visible-window))
                    ((symbol-function 'pi-mode-notifications--deliver)
-                    (lambda (_session) (setq calls (1+ calls)))))
+                    (lambda (_sessions) (setq calls (1+ calls)))))
            (let ((pi-mode-notifications-when-visible nil))
-             (pi-mode-notifications--maybe-deliver session)
+             (pi-mode-notifications--maybe-deliver (list session))
              (should (= 0 calls))))
        (pi-mode-test--notif-teardown session dir)))))
 
@@ -4821,11 +4823,11 @@ never parse and never notify."
          (cl-letf (((symbol-function 'get-buffer-window)
                     (lambda (&rest _) 'visible-window))
                    ((symbol-function 'pi-mode-notifications--deliver)
-                    (lambda (value) (push value calls))))
+                    (lambda (sessions) (push sessions calls))))
            (let ((pi-mode-notifications-when-visible t))
-             (pi-mode-notifications--maybe-deliver session)
+             (pi-mode-notifications--maybe-deliver (list session))
              (should (= 1 (length calls)))
-             (should (eq (car calls) session))))
+             (should (equal (car calls) (list session)))))
        (pi-mode-test--notif-teardown session dir)))))
 
 (ert-deftest pi-mode-test-notifications-rotation ()
@@ -4880,7 +4882,7 @@ never parse and never notify."
                (lambda (fmt &rest args) (push (apply #'format fmt args) msgs)))
               ((symbol-function 'ding) (lambda () (setq dings (1+ dings))))
               ((symbol-function 'alert) (lambda (&rest _) (push t alerts))))
-      (pi-mode-notifications--deliver session)
+      (pi-mode-notifications--deliver (list session))
       (should (equal msgs '("pi finished: fall-proj")))
       (should (= dings 1))
       (should-not alerts))))
@@ -4902,7 +4904,7 @@ never parse and never notify."
                  (push (apply #'format fmt args) messages)))
               ((symbol-function 'ding)
                (lambda () (setq dings (1+ dings)))))
-      (pi-mode-notifications--deliver session)
+      (pi-mode-notifications--deliver (list session))
       (should (equal alerts '(("pi finished: alert-proj" :title "pi-mode"))))
       (should-not messages)
       (should (= dings 0)))))
@@ -4910,12 +4912,20 @@ never parse and never notify."
 (ert-deftest pi-mode-test-notifications-message ()
   "The notification text carries the project and optional session name."
   (let ((session (make-pi-mode-session :id "x" :project-root "/tmp/some-proj/")))
-    (should (equal (pi-mode-notifications--message session)
+    (should (equal (pi-mode-notifications--message (list session))
                    "pi finished: some-proj")))
   (let ((session (make-pi-mode-session :id "x" :project-root "/tmp/some-proj/"
                                        :name "refactor")))
-    (should (equal (pi-mode-notifications--message session)
-                   "pi finished: some-proj (refactor)"))))
+    (should (equal (pi-mode-notifications--message (list session))
+                   "pi finished: some-proj (refactor)")))
+  ;; Two sessions share the scanned directory: the completion cannot be
+  ;; pinned to one of them, so even a named session is dropped from the
+  ;; text and it names the project only.
+  (let ((s1 (make-pi-mode-session :id "x" :project-root "/tmp/some-proj/"
+                                  :name "alpha"))
+        (s2 (make-pi-mode-session :id "y" :project-root "/tmp/some-proj/")))
+    (should (equal (pi-mode-notifications--message (list s1 s2))
+                   "pi finished: some-proj"))))
 
 (ert-deftest pi-mode-test-notifications-disabled-and-toggle ()
   "The poll is a no-op while disabled; the toggle flips the option."
@@ -4941,6 +4951,92 @@ never parse and never notify."
              (pi-mode-toggle-notifications)
              (should-not pi-mode-notifications)))
        (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-two-sessions-one-completion ()
+  "Two sessions of one directory: one completion notifies exactly once.
+The completion file is shared, so it cannot be attributed to a single
+session: the poll groups the sessions by directory, scans it once and
+delivers once, carrying both sessions (project-only text)."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-pair-" t))
+          (s1 (pi-mode-test--notif-session "pair-a" dir))
+          (s2 (pi-mode-test--notif-session "pair-b" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
+           (pi-mode-test--write-jsonl file (list (pi-mode-test--msg-entry "user")))
+           (cl-letf (((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (sessions) (push sessions calls))))
+             (pi-mode-notifications--poll)
+             (should-not calls)
+             ;; The shared turn completes: exactly one notification, and
+             ;; it carries both sessions of the directory.
+             (pi-mode-test--write-jsonl file
+               (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))
+             (let ((delivered (car calls)))
+               (should (= (length delivered) 2))
+               (should (memq s1 delivered))
+               (should (memq s2 delivered)))
+             ;; Project-only text: no session name in it.
+             (should (equal (pi-mode-notifications--message (list s1 s2))
+                            "pi finished: notif-proj"))
+             ;; Pending cleared: the next poll adds nothing.
+             (pi-mode-notifications--poll)
+             (should (= 1 (length calls)))))
+       (pi-mode-test--notif-teardown s1 dir)
+       (pi-mode-test--notif-teardown s2 dir)))))
+
+(ert-deftest pi-mode-test-notifications-visibility-two-sessions ()
+  "A shared completion is skipped only when EVERY session is visible."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-vis2-" t))
+          (s1 (pi-mode-test--notif-session "vis2-a" dir))
+          (s2 (pi-mode-test--notif-session "vis2-b" dir))
+          (file (expand-file-name "s.jsonl" dir))
+          (calls nil)
+          (win (selected-window)))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications t))
+           ;; Both visible + when-visible nil: suppressed (and marked
+           ;; handled).
+           (cl-letf (((symbol-function 'get-buffer-window)
+                      (lambda (&rest _) win))
+                     ((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_sessions) (push t calls))))
+             (let ((pi-mode-notifications-when-visible nil))
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "user")))
+               (pi-mode-notifications--poll)
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+               (pi-mode-notifications--poll)
+               (should-not calls)
+               (pi-mode-notifications--poll)
+               (should-not calls)))
+           ;; Only one of the two visible: delivered — the completion
+           ;; cannot be pinned to the visible session.
+           (cl-letf (((symbol-function 'get-buffer-window)
+                      (lambda (buffer &rest _)
+                        (eq buffer (pi-mode-session-buffer s1))))
+                     ((symbol-function 'pi-mode-notifications--deliver)
+                      (lambda (_sessions) (push t calls))))
+             (let ((pi-mode-notifications-when-visible nil))
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "user")) t)
+               (pi-mode-notifications--poll)
+               (pi-mode-test--write-jsonl file
+                 (list (pi-mode-test--msg-entry "assistant" "stop")) t)
+               (pi-mode-notifications--poll)
+               (should (= 1 (length calls))))))
+       (pi-mode-test--notif-teardown s1 dir)
+       (pi-mode-test--notif-teardown s2 dir)))))
 
 (ert-deftest pi-mode-test-hidden-panel-drops-dead-sessions ()
   "Hidden sets never retain dead sessions (buffer/process pin)."
