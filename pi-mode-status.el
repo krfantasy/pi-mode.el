@@ -21,13 +21,14 @@
 
 (defun pi-mode--cli-info ()
   "Return (PATH . VERSION) for the pi CLI, or nil when not found.
-VERSION is nil when `pi --version' fails."
+VERSION is nil when `pi --version' fails or prints nothing."
   (or pi-mode--cli-cache
       (let* ((path (executable-find "pi"))
              (version (and path
                            (with-temp-buffer
                              (call-process path nil t nil "--version")
-                             (string-trim (buffer-string))))))
+                             (string-trim (buffer-string)))))
+             (version (and (length> version 0) version)))
         (when path
           (setq pi-mode--cli-cache (cons path version)))
         (and path (cons path version)))))

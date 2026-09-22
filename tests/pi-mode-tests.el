@@ -3871,6 +3871,17 @@ the first session starts at slot 0."
     (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
       (should (equal (pi-mode--cli-status) "pi CLI not found in exec-path")))))
 
+(ert-deftest pi-mode-test-cli-status-empty-version ()
+  "A `pi --version' that prints nothing reports \"?\" as the version."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (cmd) (when (equal cmd "pi") "/usr/bin/pi")))
+            ((symbol-function 'call-process)
+             (lambda (&rest _args) 0)))
+    (let ((pi-mode--cli-cache nil))
+      (should (equal (pi-mode--cli-status) "pi ? found at /usr/bin/pi"))
+      ;; empty output normalizes to nil, cached like a failed call
+      (should (equal pi-mode--cli-cache '("/usr/bin/pi" . nil))))))
+
 (ert-deftest pi-mode-test-check-status-message ()
   "pi-mode-check-status messages the CLI status."
   (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) "/usr/bin/pi"))
