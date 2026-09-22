@@ -5127,7 +5127,7 @@ never parse and never notify."
                       ((symbol-function 'window-parameter)
                        (lambda (_w _p) nil))
                       ((symbol-function 'pi-mode--snapshot-session-geometry)
-                       (lambda (_s _w) (setq calls (1+ calls)) _s)))
+                       (lambda (s _w) (setq calls (1+ calls)) s)))
               (pi-mode--note-window-size-change (selected-frame)))
             (should (= calls 0)))
           (pi-mode--unregister-session "*pi[size-plain]*"))
@@ -5153,11 +5153,138 @@ never parse and never notify."
                       ((symbol-function 'window-body-width)
                        (lambda (&rest _a) 77))
                       ((symbol-function 'pi-mode--snapshot-session-geometry)
-                       (lambda (_s _w) (setq calls (1+ calls)) _s)))
+                       (lambda (s _w) (setq calls (1+ calls)) s)))
               (pi-mode--note-window-size-change (selected-frame)))
             (should (= calls 0)))
           (pi-mode--unregister-session "*pi[size-same]*"))
       (kill-buffer b) (delete-process p))))
+
+(ert-deftest pi-mode-test-size-change-reset-not-repinned ()
+  "The size-change hook after a reset leaves the overrides nil.
+`window-size-change-functions' is delivered asynchronously after the
+reset's redisplay; snapshotting the just-displayed global geometry
+there would undo `pi-mode--reset-buffer-window' (reset flow of the
+applied-geometry fix)."
+  (let* ((frame-width (frame-text-width))
+         (frame-height (frame-text-height))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[reset-hook]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[reset-hook]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :window-side 'bottom :window-height 12
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (ignore-errors (set-frame-height (selected-frame) 50))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (get-buffer-window b))
+          ;; Reset: overrides cleared, buffer redisplayed at the globals.
+          (cl-letf (((symbol-function 'pi-mode--project-root) (lambda () "/tmp/")))
+            (with-current-buffer b
+              (pi-mode--reset-buffer-window)))
+          (let ((win (get-buffer-window b)))
+            (should (eq (window-parameter win 'window-side) 'right))
+            (should (= (window-body-width win) 60)))
+          ;; The asynchronous hook must not re-pin the displayed globals.
+          (pi-mode--note-window-size-change (selected-frame))
+          (should-not (pi-mode-session-window-side s))
+          (should-not (pi-mode-session-window-width s))
+          (should-not (pi-mode-session-window-height s))
+          (pi-mode--unregister-session "*pi[reset-hook]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[reset-hook]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width))
+      (ignore-errors (set-frame-height (selected-frame) frame-height)))))
+
+(ert-deftest pi-mode-test-size-change-global-follows ()
+  "A displayed session follows later global width changes, unpinned.
+The first display must not pin its globals (the session keeps
+following them), so a global width change reaches the window via
+`pi-mode--redisplay-session' and the size-change hook does not pin
+the new width either (global-follows flow of the applied-geometry
+fix)."
+  (let* ((frame-width (frame-text-width))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[global-fw]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[global-fw]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (should (= (window-body-width (get-buffer-window b)) 60))
+          ;; First display: the hook must not pin the global width.
+          (pi-mode--note-window-size-change (selected-frame))
+          (should-not (pi-mode-session-window-side s))
+          (should-not (pi-mode-session-window-width s))
+          ;; New global width applies via redisplay and is not pinned.
+          (let ((pi-mode-window-width 80))
+            (pi-mode--redisplay-session s)
+            (should (= (window-body-width (get-buffer-window b)) 80))
+            (pi-mode--note-window-size-change (selected-frame))
+            (should (= (window-body-width (get-buffer-window b)) 80))
+            (should-not (pi-mode-session-window-side s))
+            (should-not (pi-mode-session-window-width s))
+            (should-not (pi-mode-session-window-height s)))
+          (pi-mode--unregister-session "*pi[global-fw]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[global-fw]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width)))))
+
+(ert-deftest pi-mode-test-size-change-manual-resize-pins ()
+  "A manual resize differing from the applied geometry still pins.
+`window-resize' changes the window without pi-mode's involvement, so
+the measured size differs from the recorded applied size and the
+hook snapshots it as a per-buffer override (existing feature)."
+  (let* ((frame-width (frame-text-width))
+         (pi-mode-window-side 'right)
+         (pi-mode-window-width 60)
+         (pi-mode-window-height 20)
+         (pi-mode-focus-on-open nil)
+         (pi-mode-confirm-kill nil)
+         (b (get-buffer-create "*pi[manual]*"))
+         (p (pi-mode-test--fake-process))
+         (s (make-pi-mode-session :id "*pi[manual]*" :buffer b :process p
+                                  :project-root "/tmp/" :window-slot 0
+                                  :last-used (current-time))))
+    (unwind-protect
+        (progn
+          (ignore-errors (set-frame-width (selected-frame) 140))
+          (pi-mode--register-session s)
+          (with-current-buffer b (setq-local pi-mode--session s))
+          (display-buffer b)
+          (let ((win (get-buffer-window b)))
+            (should (= (window-body-width win) 60))
+            ;; Shrink out from under the applied geometry, like a drag.
+            (window-resize win -10 t)
+            (let ((dragged (window-body-width win)))
+              (should (/= dragged 60))
+              (pi-mode--note-window-size-change (selected-frame))
+              (should (eq (pi-mode-session-window-side s) 'right))
+              (should (= (pi-mode-session-window-width s) dragged))))
+          (pi-mode--unregister-session "*pi[manual]*"))
+      (ignore-errors (delete-process p))
+      (when (buffer-live-p b) (kill-buffer b))
+      (pi-mode--unregister-session "*pi[manual]*")
+      (ignore-errors (set-frame-width (selected-frame) frame-width)))))
 
 (ert-deftest pi-mode-test-buffer-window-overrides ()
   "Buffer setters store per-session overrides without touching globals."
@@ -5504,10 +5631,10 @@ never parse and never notify."
           (let ((victim (selected-window))
                 (orig (symbol-function 'delete-window)))
             (cl-letf (((symbol-function 'delete-window)
-                       (lambda (&optional window &rest _a)
+                       (lambda (&optional window &rest args)
                          (if (eq (or window (selected-window)) victim)
                              (error "sole window")
-                           (apply orig (cons window _a))))))
+                           (apply orig (cons window args))))))
               (pi-mode--switch-to-session sb)))
           (should (get-buffer-window bb))
           (should-not (get-buffer-window ba))

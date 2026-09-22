@@ -64,7 +64,7 @@ When nil, `project-current' is used with `default-directory' as fallback."
   "Return the project root for the current context."
   (let ((root (if pi-mode-project-root-function
                   (funcall pi-mode-project-root-function)
-                (when-let ((proj (project-current)))
+                (when-let* ((proj (project-current)))
                   (project-root proj)))))
     (or root default-directory)))
 
@@ -108,7 +108,7 @@ wiped by `ghostel-mode' activation."
 (cl-defstruct pi-mode-session
   "A running pi agent session."
   id name buffer process project-root last-used window-slot
-  window-side window-width window-height
+  window-side window-width window-height window-applied
   cleanup-done exit-requested)
 
 (defcustom pi-mode-cli-args nil
@@ -259,13 +259,11 @@ then `pi-mode--cleanup-session' on exit events."
        (when (string-match-p "finished\\|exited\\|killed\\|terminated\\|deleted\\|closed" event)
          (pi-mode--cleanup-session proc event))))))
 
-(declare-function pi-mode--hidden-panel-forget-session "pi-mode" (session))
-
 (defun pi-mode--cleanup-session (process event)
   "Run session cleanup for PROCESS (idempotent).
 EVENT is the raw sentinel event string; `pi-mode-on-exit-hook'
 receives it trimmed."
-  (when-let ((session (pi-mode--session-by-process process)))
+  (when-let* ((session (pi-mode--session-by-process process)))
     (unless (pi-mode-session-cleanup-done session)
       (setf (pi-mode-session-cleanup-done session) t)
       (let ((buffer (pi-mode-session-buffer session)))
@@ -1071,7 +1069,8 @@ side switch.  Applies immediately."
 (defun pi-mode--reset-buffer-window ()
   "Forget this pi session's remembered side and size.
 The buffer follows `pi-mode-window-side', `-width' and `-height' again
-at once."
+at once, and keeps following them: the asynchronous size-change hook
+does not re-pin the geometry the reset just displayed."
   (interactive)
   (let ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt)))
     (setf (pi-mode-session-window-side session) nil
@@ -1094,7 +1093,11 @@ the `no-delete-other-windows' parameter, so `delete-other-windows'
 it.  When `pi-mode-focus-on-open' is non-nil the window is selected
 and focus moves to the session.  Every display refreshes the
 session's MRU stamp, so a `w' restore makes the shown session the
-most-recently-used target."
+most-recently-used target.  The geometry just applied is recorded in
+the session's `window-applied' slot, so the asynchronously delivered
+`window-size-change-functions' run for this resize is not mistaken
+for a manual drag and re-pinned as a per-buffer override
+\(see `pi-mode--note-window-size-change')."
   (cl-destructuring-bind (side slot size-key size-value)
       (pi-mode--display-args buffer)
     (let* ((display-buffer-alist
@@ -1121,10 +1124,23 @@ most-recently-used target."
         ;; (cc-ide parity, claude-code-ide.el:987-989).
         (when pi-mode-focus-on-open
           (select-window window))
-        ;; Refresh MRU on every display: a restore path (`w', `a', `W')
-        ;; must make the shown session the most-recently-used target
-        ;; (cc-ide parity, claude-code-ide.el:979-985).
-        (when-let ((session (pi-mode--session-by-buffer buffer)))
+        (when-let* ((session (pi-mode--session-by-buffer buffer)))
+          ;; Record the geometry just applied so the async size-change
+          ;; hook skips re-pinning it: otherwise a display at global
+          ;; geometry (first display, reset, changed globals) would be
+          ;; snapshotted back into per-buffer overrides.  Measurements run
+          ;; under `ignore-errors'; a failure stores nil, falling back
+          ;; to the hook's snapshot.
+          (setf (pi-mode-session-window-applied session)
+                (ignore-errors
+                  (let ((wside (window-parameter window 'window-side)))
+                    (cons wside
+                          (if (memq wside '(left right))
+                              (window-body-width window)
+                            (window-text-height window))))))
+          ;; Refresh MRU on every display: a restore path (`w', `a', `W')
+          ;; must make the shown session the most-recently-used target
+          ;; (cc-ide parity, claude-code-ide.el:979-985).
           (setf (pi-mode-session-last-used session) (current-time))))
       window)))
 
@@ -1289,8 +1305,8 @@ the frame parameter and pin its buffer and process."
       (set-frame-parameter
        nil 'pi-mode-hidden-panel
        (cl-loop for entry in entries
-                for kept = (cl-remove session (cdr entry))
-                for kept = (cl-remove-if-not #'pi-mode--hidden-keep-p kept)
+                for sans = (cl-remove session (cdr entry))
+                for kept = (cl-remove-if-not #'pi-mode--hidden-keep-p sans)
                 when kept collect (cons (car entry) kept))))))
 
 (defun pi-mode--hide-session-windows (&optional root)
@@ -1386,20 +1402,27 @@ most recently used one for target resolution."
 Runs from `window-size-change-functions'; manual drags are thus
 remembered even without a hide cycle (last resize wins over explicit
 setter values).  Only side windows snapshot; windows whose side and
-size already match the stored overrides are skipped.  Snapshot errors
-are ignored so a failing measurement never breaks window resizing."
+size already match the stored overrides are skipped, and so are
+resizes matching the geometry pi-mode itself just applied (the
+session's `window-applied' slot, recorded at display time), so a
+display at global geometry — first display, reset, changed
+globals — is not re-pinned as a per-buffer override.  Snapshot
+errors are ignored so a failing measurement never breaks window
+resizing."
   (dolist (win (window-list frame))
     (when-let* ((session (pi-mode--session-by-buffer (window-buffer win)))
                 (wside (ignore-errors (window-parameter win 'window-side)))
                 ((memq wside '(left right top bottom))))
-      (let ((same (if (memq wside '(left right))
-                      (and (pi-mode-session-window-width session)
-                           (equal (ignore-errors (window-body-width win))
-                                  (pi-mode-session-window-width session)))
-                    (and (pi-mode-session-window-height session)
-                         (equal (ignore-errors (window-text-height win))
-                                (pi-mode-session-window-height session))))))
-        (unless (and (eq (pi-mode-session-window-side session) wside) same)
+      (let* ((size (if (memq wside '(left right))
+                       (ignore-errors (window-body-width win))
+                     (ignore-errors (window-text-height win))))
+             (stored (if (memq wside '(left right))
+                         (pi-mode-session-window-width session)
+                       (pi-mode-session-window-height session))))
+        (unless (or (and (eq (pi-mode-session-window-side session) wside)
+                         stored (equal size stored))
+                    (equal (cons wside size)
+                           (pi-mode-session-window-applied session)))
           (ignore-errors (pi-mode--snapshot-session-geometry session win)))))))
 
 ;; Lazy install via `pi-mode--maybe-install-global-hooks' on first
