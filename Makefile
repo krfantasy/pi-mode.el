@@ -30,6 +30,11 @@ compile-tests:
 		--eval '(setq byte-compile-error-on-warn t)' \
 		-L tests/stubs -L . -L tests -L tests/e2e \
 		-f batch-byte-compile \
+		pi-mode.el \
+		pi-mode-session.el \
+		pi-mode-status.el \
+		pi-mode-menu.el \
+		pi-mode-notifications.el \
 		tests/pi-mode-tests.el \
 		tests/e2e/pi-mode-e2e-server.el \
 		tests/e2e/pi-mode-e2e.el

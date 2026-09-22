@@ -1131,7 +1131,10 @@ for a manual drag and re-pinned as a per-buffer override
           ;; geometry (first display, reset, changed globals) would be
           ;; snapshotted back into per-buffer overrides.  Measurements run
           ;; under `ignore-errors'; a failure stores nil, falling back
-          ;; to the hook's snapshot.
+          ;; to the hook's snapshot.  The measurement is taken at display
+          ;; time and may differ from the finally settled layout on
+          ;; constrained frames; the size-change hook then snapshots the
+          ;; settled size, which is acceptable.
           (setf (pi-mode-session-window-applied session)
                 (ignore-errors
                   (let ((wside (window-parameter window 'window-side)))

@@ -3120,8 +3120,9 @@ window-selection hook cannot mask the display stamp under test."
 Batch Emacs has no controlling terminal, so `make-frame' cannot
 default the frame's TTY; a dummy child process with a pty connection
 donates its terminal device (`process-tty-name') instead, and the
-universal `tty-type' \"xterm\" names the terminal type."
-  (condition-case nil
+universal `tty-type' \"xterm\" names the terminal type.  A failure is
+logged before returning nil so a permanent skip stays diagnosable."
+  (condition-case err
       (let* ((dummy (make-process :name "pi-mode-test-pty"
                                   :command (list "/bin/sleep" "10")
                                   :connection-type 'pty
@@ -3129,7 +3130,9 @@ universal `tty-type' \"xterm\" names the terminal type."
              (frame (make-frame `((tty-type . "xterm")
                                   (tty . ,(process-tty-name dummy))))))
         (cons frame dummy))
-    (error nil)))
+    (error
+     (message "pi-mode-test: make-extra-frame failed: %S" err)
+     nil)))
 
 (ert-deftest pi-mode-test-hidden-panel-forget-session-all-frames ()
   "forget-session prunes the session from EVERY frame's parameter.

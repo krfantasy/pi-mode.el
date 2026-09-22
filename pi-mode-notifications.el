@@ -56,8 +56,8 @@
 (defcustom pi-mode-notifications nil
   "When non-nil, notify when a pi session finishes answering a turn.
 The notification fires at most once per turn; it is skipped while
-`pi-mode-notifications-when-visible' is nil and every watched
-session's buffer is displayed in a window (single-session behavior)."
+`pi-mode-notifications-when-visible' is nil and every session of the
+scanned directory is displayed in a window (single-session behavior)."
   :type 'boolean
   :group 'pi)
 
