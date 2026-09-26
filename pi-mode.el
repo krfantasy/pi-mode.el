@@ -774,6 +774,11 @@ buffer to send the edited prompt."
   (interactive)
   (kill-buffer))
 
+;; markdown-mode is an optional dependency (the require is guarded and
+;; falls back to text-mode), so declare it for the byte compiler without
+;; depending on it being installed.
+(declare-function markdown-mode "markdown-mode")
+
 ;;;###autoload
 (defun pi-mode-edit-prompt ()
   "Edit the target pi session's prompt in a markdown popup buffer.
