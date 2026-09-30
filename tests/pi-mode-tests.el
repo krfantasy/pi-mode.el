@@ -25,9 +25,13 @@
 
 (defun pi-mode-test--reset-state ()
   (clrhash pi-mode--sessions)
-  (setq pi-mode--cli-cache nil)
   (clrhash pi-mode-notifications--state)
   (setq pi-mode-notifications nil)
+  ;; Real timers armed by the poll/toggle tests must not fire into a
+  ;; later test's stubbed fixtures.
+  (when (timerp pi-mode-notifications--timer)
+    (cancel-timer pi-mode-notifications--timer))
+  (setq pi-mode-notifications--timer nil)
   ;; Keep the lazy-hook invariant: no sessions → no expensive hooks.
   (when (fboundp 'pi-mode--maybe-remove-global-hooks)
     (pi-mode--maybe-remove-global-hooks))
@@ -44,13 +48,23 @@
     process))
 
 (defun pi-mode-test--with-mock-ghostel (body)
-  "Run BODY with the ghostel exec/send surface replaced by recorders."
+  "Run BODY with the ghostel exec/send surface replaced by recorders.
+`executable-find' reports a fake pi binary so the launch path is
+hermetic: the suite must run on a machine without pi installed, just
+as it runs without ghostel.  Lookups of any other command fall through
+to the real `executable-find'."
   (let ((pi-mode-test--calls nil)
         (pi-mode-test--fake-processes nil)
         (pi-mode-confirm-kill nil)     ; keep kill-buffer hooks inert in batch
-        (pi-mode-launch-settle-delay 0)) ; hermetic: no real launch sleeps
+        (pi-mode-launch-settle-delay 0) ; hermetic: no real launch sleeps
+        (real-executable-find (symbol-function 'executable-find)))
     (pi-mode-test--reset-state)
-    (cl-letf (((symbol-function 'ghostel-exec)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (command &optional remote)
+                 (if (equal command "pi")
+                     "/fake/bin/pi"
+                   (funcall real-executable-find command remote))))
+              ((symbol-function 'ghostel-exec)
                (lambda (&rest args)
                  (apply #'pi-mode-test--record-call 'ghostel-exec args)
                  (pi-mode-test--fake-process)))
@@ -924,6 +938,7 @@ wrong-number-of-arguments."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[sp]*"))
           (p (pi-mode-test--fake-process))
+          (hook-args nil)
           (s (make-pi-mode-session :id "*pi[sp]*" :buffer b :process p
                                    :project-root "/tmp/proj/")))
      (unwind-protect
@@ -935,7 +950,10 @@ wrong-number-of-arguments."
                       (lambda (&rest _) "hello pi"))
                      ((symbol-function 'sit-for)
                       (lambda (&rest _) nil)))
-             (pi-mode-send-prompt))
+             (let ((pi-mode-before-send-hook
+                    (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+               (pi-mode-send-prompt)))
+           (should (equal hook-args (list s "hello pi")))
            (should (equal (cdr (assq 'ghostel-send-string pi-mode-test--calls))
                           '("hello pi")))
            (should (equal (cdr (assq 'ghostel-send-key pi-mode-test--calls))
@@ -1595,6 +1613,7 @@ displaced session is hidden."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[rn]*"))
           (p (pi-mode-test--fake-process))
+          (hook-args nil)
           (s (make-pi-mode-session :id "*pi[rn]*" :buffer b :process p
                                    :project-root "/tmp/")))
      (unwind-protect
@@ -1604,9 +1623,12 @@ displaced session is hidden."
                       (lambda () "/tmp/"))
                      ((symbol-function 'pi-mode--read-instance-name)
                       (lambda (&rest _) "refactor")))
-             (with-current-buffer b
-               (pi-mode-session-rename)))
+             (let ((pi-mode-before-send-hook
+                    (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+               (with-current-buffer b
+                 (pi-mode-session-rename))))
            (should (equal (pi-mode-session-name s) "refactor"))
+           (should (equal hook-args (list s "/name refactor")))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
              (should (equal (car (cdr call)) "/name refactor")))
@@ -1619,13 +1641,16 @@ displaced session is hidden."
        (pi-mode--unregister-session (pi-mode-session-id s))
        (kill-buffer b) (delete-process p)))))
 
-(ert-deftest pi-mode-test-session-rename-empty-auto ()
-  "Empty rename input auto-names: no /name sent, buffer renamed to the base."
+(ert-deftest pi-mode-test-session-rename-empty-keeps-name ()
+  "Empty rename input keeps both names: pi cannot clear a session name.
+A bare /name only prints the current name, so clearing pi-mode's name
+locally would desync the buffer from pi's session."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[rn2]*"))
           (p (pi-mode-test--fake-process))
           (s (make-pi-mode-session :id "*pi[rn2]*" :buffer b :process p
-                                   :project-root "/tmp/proj/")))
+                                   :project-root "/tmp/proj/"
+                                   :name "reviews")))
      (unwind-protect
          (progn
            (pi-mode--register-session s)
@@ -1635,16 +1660,16 @@ displaced session is hidden."
                       (lambda (&rest _) nil)))
              (with-current-buffer b
                (pi-mode-session-rename)))
-           (should-not (pi-mode-session-name s))
+           (should (equal (pi-mode-session-name s) "reviews"))
            (should-not (assq 'ghostel-send-string pi-mode-test--calls))
-           (should (equal (buffer-name b) "*pi[proj]*"))
-           (should (equal (pi-mode-session-id s) "*pi[proj]*"))
+           (should (equal (buffer-name b) "*pi[rn2]*"))
+           (should (equal (pi-mode-session-id s) "*pi[rn2]*"))
            (should (eq (pi-mode--session-by-buffer b) s)))
        (pi-mode--unregister-session (pi-mode-session-id s))
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-session-rename-auto-keeps-base-name ()
-  "Renaming an auto-named session to empty keeps its base buffer name."
+  "Renaming an auto-named session to empty leaves it auto-named."
   (pi-mode-test-with-mock-ghostel
    (let* ((s (pi-mode--make-session "/tmp/proj/"))
           (p (pi-mode-test--fake-process))
@@ -1661,6 +1686,7 @@ displaced session is hidden."
              (with-current-buffer b
                (pi-mode-session-rename)))
            (should-not (pi-mode-session-name s))
+           (should-not (assq 'ghostel-send-string pi-mode-test--calls))
            (should (equal (buffer-name b) "*pi[proj]*"))
            (should (eq (pi-mode--session-by-buffer b) s)))
        (pi-mode--unregister-session (pi-mode-session-id s))
@@ -1727,33 +1753,82 @@ displaced session is hidden."
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-session-rename-uniquifies ()
-  "Renaming to a base another live session holds gets <N>."
+  "Renaming to a base another buffer holds gets <N>."
   (pi-mode-test-with-mock-ghostel
    (let* ((s1 (pi-mode--make-session "/tmp/proj/"))
           (p1 (pi-mode-test--fake-process))
-          (b1 (pi-mode-session-buffer s1))
-          (s2 (pi-mode--make-session "/tmp/proj/" "refactor"))
-          (p2 (pi-mode-test--fake-process))
-          (b2 (pi-mode-session-buffer s2)))
-     (setf (pi-mode-session-process s1) p1
-           (pi-mode-session-process s2) p2)
+          (b1 (pi-mode-session-buffer s1)))
+     (setf (pi-mode-session-process s1) p1)
      (unwind-protect
          (progn
            (pi-mode--register-session s1)
-           (pi-mode--register-session s2)
+           ;; the target buffer name is taken by an unrelated buffer
+           (get-buffer-create "*pi[proj:refactor]*")
            (cl-letf (((symbol-function 'pi-mode--project-root)
                       (lambda () "/tmp/proj/"))
                      ((symbol-function 'pi-mode--read-instance-name)
-                      (lambda (&rest _) nil)))
-             (with-current-buffer b2
+                      (lambda (&rest _) "refactor")))
+             (with-current-buffer b1
                (pi-mode-session-rename)))
-           ;; the auto base *pi[proj]* is taken by s1 -> <2>
-           (should (equal (buffer-name b2) "*pi[proj]*<2>"))
-           (should (equal (pi-mode-session-id s2) "*pi[proj]*<2>"))
-           (should (eq (pi-mode--session-by-buffer b2) s2))
+           ;; the auto base *pi[proj:refactor]* is taken -> <2>
+           (should (equal (buffer-name b1) "*pi[proj:refactor]*<2>"))
+           (should (equal (pi-mode-session-id s1) "*pi[proj:refactor]*<2>"))
            (should (eq (pi-mode--session-by-buffer b1) s1)))
        (pi-mode--unregister-session (pi-mode-session-id s1))
-       (pi-mode--unregister-session (pi-mode-session-id s2))
+       (kill-buffer b1)
+       (when (get-buffer "*pi[proj:refactor]*")
+         (kill-buffer "*pi[proj:refactor]*"))
+       (delete-process p1)))))
+
+(ert-deftest pi-mode-test-session-by-buffer-survives-manual-rename ()
+  "A manual `rename-buffer' must not hide a live session.
+The registry is keyed by buffer name, so renaming by hand leaves a
+stale key; the buffer-local session has to win the lookup."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[manual-rename]*"))
+          (p (pi-mode-test--fake-process))
+          (s (make-pi-mode-session :id "*pi[manual-rename]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (with-current-buffer b (setq-local pi-mode--session s))
+           (pi-mode--register-session s)
+           (should (eq (pi-mode--session-by-buffer b) s))
+           (with-current-buffer b
+             (rename-buffer "*pi[renamed-by-hand]*"))
+           ;; the registry key is stale now, the buffer-local is not
+           (should-not (gethash "*pi[renamed-by-hand]*" pi-mode--sessions))
+           (should (eq (pi-mode--session-by-buffer b) s)))
+       (pi-mode--unregister-session (pi-mode-session-id s))
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-resolve-session-after-manual-rename ()
+  "The current session buffer still wins resolution after a manual rename.
+Without the buffer-local fallback the stale registry key sends
+resolution to the MRU session of the project instead."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b1 (get-buffer-create "*pi[rm1]*"))
+          (b2 (get-buffer-create "*pi[rm2]*"))
+          (p1 (pi-mode-test--fake-process))
+          (p2 (pi-mode-test--fake-process))
+          (older (make-pi-mode-session :id "*pi[rm1]*" :buffer b1 :process p1
+                                       :project-root "/tmp/proj/"
+                                       :last-used (time-subtract (current-time) 60)))
+          (newer (make-pi-mode-session :id "*pi[rm2]*" :buffer b2 :process p2
+                                       :project-root "/tmp/proj/"
+                                       :last-used (current-time))))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session older)
+           (pi-mode--register-session newer)
+           (with-current-buffer b1
+             (setq-local pi-mode--session older)
+             (rename-buffer "*pi[rm1-hand]*")
+             (cl-letf (((symbol-function 'pi-mode--project-root)
+                        (lambda () "/tmp/proj/")))
+               (should (eq (pi-mode--resolve-session) older)))))
+       (pi-mode--unregister-session (pi-mode-session-id older))
+       (pi-mode--unregister-session (pi-mode-session-id newer))
        (kill-buffer b1) (kill-buffer b2)
        (delete-process p1) (delete-process p2)))))
 
@@ -3941,6 +4016,7 @@ the first session starts at slot 0."
   (pi-mode-test-with-mock-ghostel
    (let* ((b (get-buffer-create "*pi[cm]*"))
           (p (pi-mode-test--fake-process))
+          (hook-args nil)
           (s (make-pi-mode-session :id "*pi[cm]*" :buffer b :process p
                                    :project-root "/tmp/")))
      (unwind-protect
@@ -3948,7 +4024,10 @@ the first session starts at slot 0."
            (pi-mode--register-session s)
            (cl-letf (((symbol-function 'pi-mode--project-root)
                       (lambda () "/tmp/")))
-             (with-current-buffer b (pi-mode-configure-model "gpt-5.1")))
+             (let ((pi-mode-before-send-hook
+                    (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+               (with-current-buffer b (pi-mode-configure-model "gpt-5.1"))))
+           (should (equal hook-args (list s "/model gpt-5.1")))
            (let ((call (assq 'ghostel-send-string pi-mode-test--calls)))
              (should call)
              (should (equal (car (cdr call)) "/model gpt-5.1")))
@@ -3957,6 +4036,26 @@ the first session starts at slot 0."
              (should call)
              (should (equal (cdr call) '("return")))))
        (pi-mode--unregister-session "*pi[cm]*")
+       (kill-buffer b) (delete-process p)))))
+
+(ert-deftest pi-mode-test-configure-model-runs-before-send-hook ()
+  "The /model command runs `pi-mode-before-send-hook' with its text."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[cmh]*"))
+          (p (pi-mode-test--fake-process))
+          (hook-args nil)
+          (s (make-pi-mode-session :id "*pi[cmh]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           (pi-mode--register-session s)
+           (cl-letf (((symbol-function 'pi-mode--project-root)
+                      (lambda () "/tmp/")))
+             (let ((pi-mode-before-send-hook
+                    (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+               (with-current-buffer b (pi-mode-configure-model "gpt-5.1"))))
+           (should (equal hook-args (list s "/model gpt-5.1"))))
+       (pi-mode--unregister-session "*pi[cmh]*")
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-configure-thinking ()
@@ -4066,7 +4165,7 @@ leaves `pi-mode-cli-args' untouched."
        (kill-buffer b) (delete-process p)))))
 
 (ert-deftest pi-mode-test-cli-info-found ()
-  "pi-mode--cli-info runs pi --version and caches the result."
+  "pi-mode--cli-info runs pi --version and returns the pair."
   (cl-letf (((symbol-function 'executable-find)
              (lambda (cmd) (when (equal cmd "pi") "/usr/bin/pi")))
             ((symbol-function 'call-process)
@@ -4076,16 +4175,30 @@ leaves `pi-mode-cli-args' untouched."
                    (with-current-buffer (if (bufferp dest) dest (current-buffer))
                      (insert "0.84.1\n")))
                  0))))
-    (let ((pi-mode--cli-cache nil))
-      (should (equal (cdr (pi-mode--cli-info)) "0.84.1"))
-      (should (equal pi-mode--cli-cache '("/usr/bin/pi" . "0.84.1"))))))
+    (should (equal (pi-mode--cli-info) '("/usr/bin/pi" . "0.84.1")))))
+
+(ert-deftest pi-mode-test-cli-info-reruns-version-each-call ()
+  "A reinstall or upgrade is picked up: the probe is never stale.
+The status commands are explicit user actions, so caching the result
+would keep reporting the old binary and version."
+  (let ((path "/usr/bin/pi")
+        (version "0.84.1"))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (cmd) (when (equal cmd "pi") path)))
+              ((symbol-function 'call-process)
+               (lambda (&rest args)
+                 (when (eq (nth 2 args) t)
+                   (insert version)
+                   (insert "\n"))
+                 0)))
+      (should (equal (pi-mode--cli-info) '("/usr/bin/pi" . "0.84.1")))
+      (setq path "/usr/local/bin/pi" version "0.90.0")
+      (should (equal (pi-mode--cli-info) '("/usr/local/bin/pi" . "0.90.0"))))))
 
 (ert-deftest pi-mode-test-cli-info-missing ()
   "pi-mode--cli-info is nil when the CLI is absent."
   (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
-    (let ((pi-mode--cli-cache nil))
-      (should-not (pi-mode--cli-info))
-      (should-not pi-mode--cli-cache))))
+    (should-not (pi-mode--cli-info))))
 
 (ert-deftest pi-mode-test-cli-status-strings ()
   "pi-mode--cli-status formats found and missing states."
@@ -4095,8 +4208,7 @@ leaves `pi-mode-cli-args' untouched."
              (lambda (&rest args)
                (when (eq (nth 2 args) t) (insert "0.84.1\n"))
                0)))
-    (let ((pi-mode--cli-cache nil))
-      (should (equal (pi-mode--cli-status) "pi 0.84.1 found at /usr/bin/pi")))
+    (should (equal (pi-mode--cli-status) "pi 0.84.1 found at /usr/bin/pi"))
     (cl-letf (((symbol-function 'executable-find) (lambda (_cmd) nil)))
       (should (equal (pi-mode--cli-status) "pi CLI not found in exec-path")))))
 
@@ -4106,10 +4218,7 @@ leaves `pi-mode-cli-args' untouched."
              (lambda (cmd) (when (equal cmd "pi") "/usr/bin/pi")))
             ((symbol-function 'call-process)
              (lambda (&rest _args) 0)))
-    (let ((pi-mode--cli-cache nil))
-      (should (equal (pi-mode--cli-status) "pi ? found at /usr/bin/pi"))
-      ;; empty output normalizes to nil, cached like a failed call
-      (should (equal pi-mode--cli-cache '("/usr/bin/pi" . nil))))))
+    (should (equal (pi-mode--cli-status) "pi ? found at /usr/bin/pi"))))
 
 (ert-deftest pi-mode-test-check-status-message ()
   "pi-mode-check-status messages the CLI status."
@@ -4120,9 +4229,8 @@ leaves `pi-mode-cli-args' untouched."
                0))
             ((symbol-function 'message)
              (lambda (fmt &rest args) (apply #'format fmt args))))
-    (let ((pi-mode--cli-cache nil))
-      (should (equal (pi-mode-check-status)
-                     "pi 0.84.1 found at /usr/bin/pi")))))
+    (should (equal (pi-mode-check-status)
+                   "pi 0.84.1 found at /usr/bin/pi"))))
 
 (ert-deftest pi-mode-test-version-info-buffer ()
   "pi-mode-show-version-info fills *pi-mode-status*."
@@ -5198,6 +5306,57 @@ never parse and never notify."
              (pi-mode-toggle-notifications)
              (should-not pi-mode-notifications)))
        (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-no-timer-while-disabled ()
+  "A live session alone does not arm the poll chain while disabled.
+Without notifications there is nothing to poll for, so an Emacs that
+never enables them must pay no periodic work."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-off-" t))
+          (session (pi-mode-test--notif-session "nt-off" dir)))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications nil)
+                   (pi-mode-notifications--timer nil))
+           (pi-mode-notifications--ensure-poll)
+           (should-not pi-mode-notifications--timer)
+           ;; even with a live session, a disabled poll re-arms nothing
+           (pi-mode-notifications--poll)
+           (should-not pi-mode-notifications--timer))
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-toggle-arms-poll ()
+  "Enabling notifications arms the poll chain at once; disabling stops it.
+A session already running when the option is flipped must be watched
+without waiting for the next session to start."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((dir (make-temp-file "pi-notif-arm-" t))
+          (session (pi-mode-test--notif-session "nt-arm" dir))
+          timer)
+     (unwind-protect
+         (cl-letf (((symbol-function 'pi-mode--session-dir)
+                    (lambda (_root) dir))
+                   (pi-mode-notifications nil)
+                   (pi-mode-notifications--timer nil))
+           (pi-mode-toggle-notifications)
+           (should pi-mode-notifications)
+           (setq timer pi-mode-notifications--timer)
+           (should (timerp timer))
+           (should (memq timer timer-list))
+           (pi-mode-toggle-notifications)
+           (should-not pi-mode-notifications))
+       (when (timerp timer) (cancel-timer timer))
+       (setq pi-mode-notifications--timer nil)
+       (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-poll-chain-dies-when-idle ()
+  "With nothing to watch the poll chain stops re-arming itself."
+  (pi-mode-test-with-mock-ghostel
+   (let ((pi-mode-notifications t)
+         (pi-mode-notifications--timer nil))
+     (pi-mode-notifications--poll)
+     (should-not pi-mode-notifications--timer))))
 
 (ert-deftest pi-mode-test-notifications-two-sessions-one-completion ()
   "Two sessions of one directory: one completion notifies exactly once.

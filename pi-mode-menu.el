@@ -2,6 +2,7 @@
 
 ;; Author: Jay Xu
 ;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1") (ghostel "0.49") (transient "0.7"))
 ;; Keywords: tools, processes
 ;; URL: https://github.com/krfantasy/pi-mode.el
 ;; License: The License

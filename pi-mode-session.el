@@ -2,6 +2,7 @@
 
 ;; Author: Jay Xu
 ;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1") (ghostel "0.49") (transient "0.7"))
 ;; Keywords: tools, processes
 ;; URL: https://github.com/krfantasy/pi-mode.el
 ;; License: The License
@@ -73,42 +74,51 @@ sessions, or with a prefix argument."
 The new name is read with `pi-mode--read-instance-name': pure-numeric
 names and names containing `[', `]', `*', or control characters are
 rejected, as are names already used by another live session of the
-project; the old name prefills the prompt and empty input auto-names
-(the session becomes unnamed).  Sends /name to pi and renames the
-terminal buffer so the buffer name and the display name stay in sync."
+project; the old name prefills the prompt.  Sends /name to pi and
+renames the terminal buffer so the buffer name and the display name
+stay in sync (pi sanitizes its name by collapsing CR/LF and trimming,
+which the validation already rules out).
+
+Empty input keeps the current name: pi has no way to clear a session
+name (a bare /name only prints the current one), so accepting an empty
+name would leave pi's session name and the buffer name disagreeing."
   (interactive)
   (let* ((session (pi-mode--resolve-session current-prefix-arg nil 'prompt))
          (root (pi-mode-session-project-root session))
          (old-name (pi-mode-session-name session))
          (new-name (pi-mode--read-instance-name
                     root
-                    (format "Rename %s to (empty for auto): "
+                    (format "Rename %s to (empty to keep the current name): "
                             (or old-name (pi-mode-session-id session)))
                     session)))
-    (when new-name
-      (with-current-buffer (pi-mode-session-buffer session)
-        (ghostel-send-string (format "/name %s" new-name))
-        (ghostel-send-key "return")))
-    (setf (pi-mode-session-name session) new-name)
-    ;; Rename the terminal buffer and re-key the registry, preserving the
-    ;; id = buffer-name invariant `pi-mode--session-by-buffer' relies on.
-    (let ((new-buffer-name
-           (generate-new-buffer-name
-            (pi-mode--session-base-name root new-name)
-            (buffer-name (pi-mode-session-buffer session)))))
-      (pi-mode--unregister-session (pi-mode-session-id session))
-      (setf (pi-mode-session-id session) new-buffer-name)
-      (with-current-buffer (pi-mode-session-buffer session)
-        (rename-buffer new-buffer-name))
-      (pi-mode--register-session session))
-    (pi-mode-log "renamed session to %s" (or new-name "auto"))))
+    (if (null new-name)
+        (message "pi-mode: session name unchanged (%s)"
+                 (or old-name (pi-mode-session-id session)))
+      (let ((text (format "/name %s" new-name)))
+        (run-hook-with-args 'pi-mode-before-send-hook session text)
+        (with-current-buffer (pi-mode-session-buffer session)
+          (ghostel-send-string text)
+          (ghostel-send-key "return")))
+      (setf (pi-mode-session-name session) new-name)
+      ;; Rename the terminal buffer and re-key the registry so the
+      ;; session stays reachable by its id.
+      (let ((new-buffer-name
+             (generate-new-buffer-name
+              (pi-mode--session-base-name root new-name)
+              (buffer-name (pi-mode-session-buffer session)))))
+        (pi-mode--unregister-session (pi-mode-session-id session))
+        (setf (pi-mode-session-id session) new-buffer-name)
+        (with-current-buffer (pi-mode-session-buffer session)
+          (rename-buffer new-buffer-name))
+        (pi-mode--register-session session))
+      (pi-mode-log "renamed session to %s" new-name))))
 
 ;;;###autoload
 (defun pi-mode-session-stop ()
   "Stop the target pi session.
 Stopping is destructive, so the target is never guessed: the current
 session buffer's session, the sole session of the project, or the sole
-visible one is stopped directly; otherwise a completing-read picks the
+visible one is stopped directly; otherwise `completing-read' picks the
 session.  When `pi-mode-confirm-quit' is non-nil a y-or-n prompt asks
 before stopping; declining leaves the session untouched (the
 resolution already asks when the target is ambiguous, cc-ide parity).

@@ -16,22 +16,17 @@
 (require 'cl-lib)
 (require 'pi-mode)
 
-(defvar pi-mode--cli-cache nil
-  "Cached (PATH . VERSION) for the pi CLI, or nil when unknown.")
-
 (defun pi-mode--cli-info ()
   "Return (PATH . VERSION) for the pi CLI, or nil when not found.
-VERSION is nil when `pi --version' fails or prints nothing."
-  (or pi-mode--cli-cache
-      (let* ((path (executable-find "pi"))
-             (version (and path
-                           (with-temp-buffer
-                             (call-process path nil t nil "--version")
-                             (string-trim (buffer-string)))))
-             (version (and (length> version 0) version)))
-        (when path
-          (setq pi-mode--cli-cache (cons path version)))
-        (and path (cons path version)))))
+Probes `pi --version' on every call: the callers are explicit status
+commands, and a cache would keep reporting a path or version that a
+reinstall or upgrade has already replaced.  VERSION is nil when the
+call fails or prints nothing."
+  (when-let* ((path (executable-find "pi")))
+    (let ((version (with-temp-buffer
+                     (call-process path nil t nil "--version")
+                     (string-trim (buffer-string)))))
+      (cons path (and (length> version 0) version)))))
 
 (defun pi-mode--cli-status ()
   "One-line status string for the pi CLI."

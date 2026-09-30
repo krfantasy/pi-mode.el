@@ -11,6 +11,15 @@
 ;; Run the pi coding agent inside a ghostel terminal buffer with project
 ;; detection, prompt-input region sending, prompt editing in a markdown
 ;; popup, session management, and a transient command menu.
+;;
+;; Loading pi-mode has deliberate global effects: it binds C-c C-' in
+;; `global-map', adds the session-buffer predicate to
+;; `display-buffer-alist', adds "C-g" to `ghostel-keymap-exceptions'
+;; (rebuilding ghostel's semi-char keymap), and installs two permanent
+;; `kill-buffer-hook' functions (the kill guard and the selection
+;; cleanup).  The per-command and window hooks, and the notification
+;; poll chain, are installed lazily while sessions are live and removed
+;; once the last one goes away.
 
 ;;; Code:
 
@@ -154,9 +163,10 @@ Parity with cc-ide's `claude-code-ide-terminal-initialization-delay'."
 
 (defun pi-mode--maybe-install-global-hooks ()
   "Install expensive global hooks while sessions are live.
-`kill-buffer-hook' guards and `display-buffer-alist' stay permanent
-(cheap, kill-only / early-out); per-command and window hooks are
-installed lazily so an idle Emacs pays nothing."
+The `kill-buffer-hook' guards and the `display-buffer-alist' entry
+stay permanent: they are cheap and either kill-only or early-out.
+The per-command and window hooks are installed lazily instead, so an
+idle Emacs pays nothing."
   (add-hook 'post-command-hook #'pi-mode--track-selection)
   (add-hook 'tab-bar-tab-post-open-functions #'pi-mode--strip-new-tab-pi-windows)
   (add-hook 'window-selection-change-functions #'pi-mode--note-window-selection)
@@ -171,10 +181,12 @@ installed lazily so an idle Emacs pays nothing."
     (remove-hook 'window-size-change-functions #'pi-mode--note-window-size-change)))
 
 (defun pi-mode--register-session (session)
+  "Add SESSION to the live-session registry."
   (puthash (pi-mode-session-id session) session pi-mode--sessions)
   (pi-mode--maybe-install-global-hooks))
 
 (defun pi-mode--unregister-session (id)
+  "Drop the session identified by ID from the registry."
   (remhash id pi-mode--sessions)
   (pi-mode--maybe-remove-global-hooks))
 
@@ -206,21 +218,39 @@ Reuses the live filter and sort of `pi-mode--active-sessions'."
      (pi-mode--active-sessions))))
 
 (defun pi-mode--session-by-buffer (buffer)
-  (when buffer
-    (gethash (buffer-name buffer) pi-mode--sessions)))
+  "Return the live session hosted by BUFFER, or nil.
+BUFFER is a buffer object or a buffer name.  The buffer-local session
+is consulted first: the registry is keyed by buffer name, so a manual
+`rename-buffer' would otherwise leave a stale key and hide a live
+session from resolution, geometry and MRU tracking.  A buffer-local
+whose process already died falls through to the registry, which
+cleanup has emptied; the registry lookup also covers buffers whose
+local was wiped by `ghostel-mode' activation."
+  (when-let* ((buf (get-buffer buffer)))
+    (let ((local (buffer-local-value 'pi-mode--session buf)))
+      (or (and (pi-mode--session-live-p local) local)
+          (gethash (buffer-name buf) pi-mode--sessions)))))
 
 (defun pi-mode--session-by-process (process)
+  "Return the session whose process is PROCESS, or nil."
   (cl-loop for s being the hash-values of pi-mode--sessions
            when (eq (pi-mode-session-process s) process) return s))
 
 (defun pi-mode--visible-sessions (sessions)
+  "Return the members of SESSIONS that are displayed in a window."
   (cl-remove-if-not (lambda (s) (get-buffer-window (pi-mode-session-buffer s))) sessions))
 
 ;;; Hooks
 ;; Defined before `pi-mode--cleanup-session', which runs them.
 
 (defvar pi-mode-before-send-hook nil
-  "Hook run with (SESSION TEXT) before text is sent to pi.")
+  "Hook run with (SESSION TEXT) before TEXT is delivered to pi.
+Fires for text written into pi's prompt input
+\(`pi-mode-insert-selection', `pi-mode-send-region', `pi-mode-send-file',
+`pi-mode-edit-prompt') and for text sent as a command
+\(`pi-mode-send-prompt', `pi-mode-configure-model',
+`pi-mode-session-rename').  Key sequences pi-mode sends (interrupt,
+newline, thinking level) do not run it.")
 
 (defvar pi-mode-after-start-hook nil
   "Hook run with the session struct after a pi session starts.")
@@ -292,6 +322,7 @@ path re-applies them after the terminal is created."
 
 (defun pi-mode--make-session (project-root &optional name)
   "Create an unregistered session struct for PROJECT-ROOT in a new buffer.
+Optional NAME is the instance display name.
 Registration happens in `pi-mode--launch-buffer' after a successful
 launch, so a failed launch leaves nothing behind."
   (let* ((buffer-name (generate-new-buffer-name
@@ -318,9 +349,10 @@ The \" Pi\" lighter comes from `pi-mode'; this adds the session name."
     ""))
 
 (defun pi-mode--launch-buffer (project-root args &optional name)
-  "Create a session buffer, launch pi in it, and display it.
-The session is registered only after a successful launch; when the
-launch fails the scratch buffer is removed."
+  "Create a session buffer for PROJECT-ROOT, launch pi with ARGS, display it.
+Optional NAME is the instance display name.  The session is registered
+only after a successful launch; when the launch fails the scratch
+buffer is removed."
   (let ((session (pi-mode--make-session project-root name)))
     (unwind-protect
         (let* ((buffer (pi-mode-session-buffer session))
@@ -394,9 +426,10 @@ and re-prompts.  Returns the trimmed name string or nil."
 (defun pi-mode--maybe-read-instance-name (root)
   "Return the instance name for a new session of project ROOT.
 Prompts via `pi-mode--read-instance-name' when ROOT already has live
-sessions, or when a prefix argument is given (so C-u offers the prompt
-for the first instance too); otherwise returns nil and the session is
-auto-named.  Matches cc-ide's trigger in `claude-code-ide--start-session'."
+sessions, or when a prefix argument is given (so \\[universal-argument]
+offers the prompt for the first instance too); otherwise returns nil
+and the session is auto-named.  Matches cc-ide's trigger in
+`claude-code-ide--start-session'."
   (when (or current-prefix-arg (pi-mode--project-sessions root))
     (pi-mode--read-instance-name root)))
 
@@ -440,8 +473,9 @@ distinguishable (cc-ide parity, claude-code-ide.el:1663-1680)."
 (defun pi-mode--resolve-session (&optional prefix no-ask intent)
   "Resolve the target session for a command.
 Resolution is scoped to the current project
-(`pi-mode--project-root').  PREFIX non-nil means the user gave C-u:
-prompt unless NO-ASK, even from a session buffer.  Without a prefix
+\(`pi-mode--project-root').  PREFIX non-nil means the user gave
+\[universal-argument]: prompt unless NO-ASK, even from a session
+buffer.  Without a prefix
 the current buffer's session wins, whichever project it belongs to;
 then sole; sole-visible; else INTENT `prompt' prompts instead of
 guessing, otherwise the MRU session is used with an echo.  Signals
@@ -547,6 +581,7 @@ prompts)."
   (let* ((session (pi-mode--resolve-session current-prefix-arg))
          (prompt (read-string "pi prompt: ")))
     (when (not (string-empty-p (string-trim prompt)))
+      (run-hook-with-args 'pi-mode-before-send-hook session prompt)
       (with-current-buffer (pi-mode-session-buffer session)
         (ghostel-send-string prompt)
         ;; Let the TUI process the text before Return (cc-ide parity,
@@ -589,7 +624,7 @@ settings files; see `pi-mode--prompt-editor-padding'."
         (and (integerp padding) (<= 0 padding) padding)))))
 
 (defun pi-mode--prompt-editor-padding (&optional session)
-  "pi's prompt-editor side padding for SESSION (columns).
+  "Return pi's prompt-editor side padding for SESSION (columns).
 Reads `editorPaddingX' from pi's settings files — the project
 `.pi/settings.json' first, then the agent `settings.json' — mirroring
 pi's own precedence; falls back to `pi-mode-prompt-editor-padding-x'."
@@ -763,7 +798,12 @@ buffer to send the edited prompt."
       (user-error "The pi session is no longer running; the edit is kept in this buffer"))
     (let ((text (string-trim-right (buffer-string))))
       (with-current-buffer (pi-mode-session-buffer session)
-        (ghostel-send-key "c" "ctrl")) ; pi's app.clear: wipe the input box
+        ;; pi's app.clear wipes the input box.  It is bound to ctrl+c by
+        ;; default — verified against pi 0.99.1's bundled keybindings
+        ;; ("Clear editor"), where pressing it twice in quick succession
+        ;; exits pi — and pi-mode no longer rewrites pi's
+        ;; keybindings.json, so exactly one synthetic press is sent here.
+        (ghostel-send-key "c" "ctrl"))
       (pi-mode--insert-text session text)
       (let ((id (pi-mode-session-id session)))
         (kill-buffer)
@@ -877,7 +917,7 @@ region to insert."
 
 ;;;###autoload
 (defun pi-mode-send-region (start end)
-  "Insert the region into the target pi session's prompt input.
+  "Insert the region between START and END into the pi prompt input.
 The region content is pasted without submitting; press Return in the
 pi buffer to send it."
   (interactive "r")
@@ -1094,8 +1134,8 @@ visible side by side instead of evicting each other.  Left/right
 windows are sized to exactly `pi-mode-window-width' body columns;
 top/bottom windows to exactly `pi-mode-window-height' text lines.
 The chosen window is dedicated to its session buffer and carries
-the `no-delete-other-windows' parameter, so `delete-other-windows'
-\(C-x 1) keeps it and unrelated `display-buffer' calls cannot reuse
+the `no-delete-other-windows' parameter, so \\[delete-other-windows]
+keeps it and unrelated `display-buffer' calls cannot reuse
 it.  When `pi-mode-focus-on-open' is non-nil the window is selected
 and focus moves to the session.  Every display refreshes the
 session's MRU stamp, so a `w' restore makes the shown session the
@@ -1223,7 +1263,7 @@ is visible."
 When a pi side window is visible, SESSION takes over that panel: it
 inherits the visible window's side AND slot, so the display reuses
 the window and the new session replaces the visible pi window
-(claude-code-ide's pre-slot single-window behavior) instead of
+\(claude-code-ide's pre-slot single-window behavior) instead of
 stacking a new panel beside or below it.  The displaced session is
 re-homed to a fresh slot in its own project block, so restoring or
 showing it later opens side by side rather than evicting the new
@@ -1529,10 +1569,10 @@ stopped sessions), falling back to the most recently used session."
 (defun pi-mode-install-keybindings (&optional _force)
   "Compatibility shim for the removed pi-side keybinding installer.
 pi-mode no longer writes pi's keybindings.json: ghostel semi-char mode
-delivers nearly every key to pi, and `C-c C-q' sends any intercepted
-key literally.  This stub exists so stale `use-package' `:config'
-blocks calling `pi-mode-install-keybindings' do not error; delete the
-call from your configuration."
+delivers nearly every key to pi, and ghostel's send-next-key binding
+sends any intercepted key literally.  This stub exists so stale
+`use-package' `:config' blocks calling `pi-mode-install-keybindings'
+do not error; delete the call from your configuration."
   (interactive "P")
   (message "pi-mode: pi-side keybinding installation was removed; drop (pi-mode-install-keybindings) from your config"))
 
@@ -1542,11 +1582,13 @@ call from your configuration."
 
 ;;;###autoload
 (defun pi-mode-configure-model (model)
-  "Set pi's model via /model."
+  "Set pi's model to MODEL via /model."
   (interactive "sModel: ")
-  (let ((session (pi-mode--resolve-session current-prefix-arg)))
+  (let* ((session (pi-mode--resolve-session current-prefix-arg))
+         (text (format "/model %s" model)))
+    (run-hook-with-args 'pi-mode-before-send-hook session text)
     (with-current-buffer (pi-mode-session-buffer session)
-      (ghostel-send-string (format "/model %s" model))
+      (ghostel-send-string text)
       (ghostel-send-key "return"))))
 
 ;;;###autoload
@@ -1580,7 +1622,7 @@ untouched."
          ;; order matters: the VALUE first, then the flag, so the list
          ;; reads ("--tui-mode" next ...)
          (launch-args (append (list "--tui-mode" next) stripped)))
-    (when (y-or-n-p (format "Switch TUI mode to %s? The session restarts. " next))
+    (when (y-or-n-p (format "Switch TUI mode to %s (the session restarts)? " next))
       (setf (pi-mode-session-exit-requested session) t)
       (delete-process (pi-mode-session-process session))
       (pi-mode--launch-buffer (pi-mode-session-project-root session) launch-args)

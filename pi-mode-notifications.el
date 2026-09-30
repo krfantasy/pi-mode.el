@@ -57,8 +57,16 @@
   "When non-nil, notify when a pi session finishes answering a turn.
 The notification fires at most once per turn; it is skipped while
 `pi-mode-notifications-when-visible' is nil and every session of the
-scanned directory is displayed in a window (single-session behavior)."
+scanned directory is displayed in a window (single-session behavior).
+Enabling it starts the poll chain at once, even with a session
+already running."
   :type 'boolean
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         ;; Enabling from Customize must arm the chain: it goes idle
+         ;; while disabled (see `pi-mode-notifications--poll').
+         (when (and value (fboundp 'pi-mode-notifications--ensure-poll))
+           (pi-mode-notifications--ensure-poll)))
   :group 'pi)
 
 (defcustom pi-mode-notifications-when-visible nil
@@ -124,6 +132,9 @@ single-session directories behave exactly as before."
   "Toggle `pi-mode-notifications'."
   (interactive)
   (setq pi-mode-notifications (not pi-mode-notifications))
+  ;; Enabling must arm the poll chain: it goes idle while disabled.
+  (when pi-mode-notifications
+    (pi-mode-notifications--ensure-poll))
   (message "pi-mode notifications %s" (if pi-mode-notifications "on" "off")))
 
 (defun pi-mode-notifications--jsonl-files (dir)
@@ -290,28 +301,35 @@ restarts via `pi-mode-notifications--ensure-poll'."
                    by-dir))))
     (pi-mode-notifications--prune)
     (setq pi-mode-notifications--timer nil)
-    ;; Keep watching while there is anything to watch; otherwise let
-    ;; the chain die so the timer does not fire forever on an idle
-    ;; Emacs.  Sessions launched outside pi-mode are not watched (no
-    ;; session struct to associate).
-    (when (or sessions (> (hash-table-count pi-mode-notifications--state) 0))
+    ;; Keep watching only while notifications are enabled and there is
+    ;; something to watch; otherwise let the chain die so an Emacs that
+    ;; never enabled notifications pays no periodic work at all.
+    ;; Sessions launched outside pi-mode are not watched (no session
+    ;; struct to associate).
+    (when (and pi-mode-notifications
+               (or sessions (> (hash-table-count pi-mode-notifications--state) 0)))
       (setq pi-mode-notifications--timer
             (run-at-time pi-mode-notifications-interval nil
                          #'pi-mode-notifications--poll)))))
 
 (defun pi-mode-notifications--ensure-poll (&rest _args)
-  "Start the notification poll chain when it is not running.
-Called at load and whenever a session starts (via
-`pi-mode-after-start-hook'), so the chain restarts after going idle.
+  "Start the notification poll chain when it is not already running.
+A no-op while `pi-mode-notifications' is nil: the chain is armed only
+when there is something to do, so an Emacs that never enables
+notifications runs no periodic timer.  Called at load (for a value set
+in the init file before pi-mode was loaded), whenever a session starts
+via `pi-mode-after-start-hook', and when notifications are enabled.
 ARGS are ignored (the hook passes the new session)."
-  (unless (and pi-mode-notifications--timer
-               (memq pi-mode-notifications--timer timer-list))
+  (when (and pi-mode-notifications
+             (not (and pi-mode-notifications--timer
+                       (memq pi-mode-notifications--timer timer-list))))
     (setq pi-mode-notifications--timer
           (run-at-time pi-mode-notifications-interval nil
                        #'pi-mode-notifications--poll))))
 
 ;; One-shot start of the poll chain; `pi-mode-notifications--poll'
-;; keeps it alive only while there is state to watch.
+;; keeps it alive only while notifications are enabled and there is
+;; state to watch.
 (pi-mode-notifications--ensure-poll)
 (add-hook 'pi-mode-after-start-hook #'pi-mode-notifications--ensure-poll)
 
