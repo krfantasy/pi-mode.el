@@ -95,6 +95,10 @@ name would leave pi's session name and the buffer name disagreeing."
         (message "pi-mode: session name unchanged (%s)"
                  (or old-name (pi-mode-session-id session)))
       (let ((text (format "/name %s" new-name)))
+        ;; Resolution only returns live sessions, but the session can
+        ;; die in between; fail before the hook runs for an unsent text.
+        (unless (pi-mode--session-live-p session)
+          (user-error "pi session is not running; start one with `pi-mode-start'"))
         (run-hook-with-args 'pi-mode-before-send-hook session text)
         (with-current-buffer (pi-mode-session-buffer session)
           (ghostel-send-string text)

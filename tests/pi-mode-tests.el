@@ -987,6 +987,29 @@ wrong-number-of-arguments."
        (pi-mode--unregister-session "*pi[sp2]*")
        (kill-buffer b) (delete-process p)))))
 
+(ert-deftest pi-mode-test-send-prompt-no-hook-when-dead ()
+  "A session that died before the send fails before the hook fires."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[spd]*"))
+          (p (pi-mode-test--fake-process))
+          (hook-args nil)
+          (s (make-pi-mode-session :id "*pi[spd]*" :buffer b :process p
+                                   :project-root "/tmp/proj/")))
+     (unwind-protect
+         (progn
+           ;; the session dies between resolution and the send
+           (delete-process p)
+           (let ((pi-mode-before-send-hook
+                  (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+             (cl-letf (((symbol-function 'pi-mode--resolve-session)
+                        (lambda (&rest _) s))
+                       ((symbol-function 'read-string)
+                        (lambda (&rest _) "hello pi")))
+               (should-error (pi-mode-send-prompt) :type 'user-error)))
+           (should-not hook-args)
+           (should-not (assq 'ghostel-send-string pi-mode-test--calls)))
+       (kill-buffer b)))))
+
 (ert-deftest pi-mode-test-insert-newline-sends-backslash-return ()
   "insert-newline sends backslash then Return to the target session."
   (pi-mode-test-with-mock-ghostel
@@ -1779,6 +1802,32 @@ locally would desync the buffer from pi's session."
        (when (get-buffer "*pi[proj:refactor]*")
          (kill-buffer "*pi[proj:refactor]*"))
        (delete-process p1)))))
+
+(ert-deftest pi-mode-test-session-rename-no-hook-when-dead ()
+  "A session that died before the rename fails before the hook fires."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[rnd]*"))
+          (p (pi-mode-test--fake-process))
+          (hook-args nil)
+          (s (make-pi-mode-session :id "*pi[rnd]*" :buffer b :process p
+                                   :project-root "/tmp/" :name "old")))
+     (unwind-protect
+         (progn
+           ;; the session dies between resolution and the send
+           (delete-process p)
+           (let ((pi-mode-before-send-hook
+                  (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+             (cl-letf (((symbol-function 'pi-mode--resolve-session)
+                        (lambda (&rest _) s))
+                       ((symbol-function 'pi-mode--read-instance-name)
+                        (lambda (&rest _) "fresh")))
+               (should-error (with-current-buffer b
+                               (pi-mode-session-rename))
+                             :type 'user-error)))
+           (should (equal (pi-mode-session-name s) "old"))
+           (should-not hook-args)
+           (should-not (assq 'ghostel-send-string pi-mode-test--calls)))
+       (kill-buffer b)))))
 
 (ert-deftest pi-mode-test-session-by-buffer-survives-manual-rename ()
   "A manual `rename-buffer' must not hide a live session.
@@ -4058,6 +4107,28 @@ the first session starts at slot 0."
        (pi-mode--unregister-session "*pi[cmh]*")
        (kill-buffer b) (delete-process p)))))
 
+(ert-deftest pi-mode-test-configure-model-no-hook-when-dead ()
+  "A session that died before /model fails before the hook fires."
+  (pi-mode-test-with-mock-ghostel
+   (let* ((b (get-buffer-create "*pi[cmd]*"))
+          (p (pi-mode-test--fake-process))
+          (hook-args nil)
+          (s (make-pi-mode-session :id "*pi[cmd]*" :buffer b :process p
+                                   :project-root "/tmp/")))
+     (unwind-protect
+         (progn
+           ;; the session dies between resolution and the send
+           (delete-process p)
+           (let ((pi-mode-before-send-hook
+                  (list (lambda (sess txt) (setq hook-args (list sess txt))))))
+             (cl-letf (((symbol-function 'pi-mode--resolve-session)
+                        (lambda (&rest _) s)))
+               (should-error (pi-mode-configure-model "gpt-5.1")
+                             :type 'user-error)))
+           (should-not hook-args)
+           (should-not (assq 'ghostel-send-string pi-mode-test--calls)))
+       (kill-buffer b)))))
+
 (ert-deftest pi-mode-test-configure-thinking ()
   "pi-mode-configure-thinking sends shift+tab."
   (pi-mode-test-with-mock-ghostel
@@ -5349,6 +5420,28 @@ without waiting for the next session to start."
        (when (timerp timer) (cancel-timer timer))
        (setq pi-mode-notifications--timer nil)
        (pi-mode-test--notif-teardown session dir)))))
+
+(ert-deftest pi-mode-test-notifications-setq-arms-poll ()
+  "A plain enabling `setq' arms the poll chain at once.
+The variable watcher covers hand-written `setq', not only the
+Customize setter, so a session started while notifications were off
+is watched as soon as they are turned on.  A `let' binding is not a
+set and must not arm anything."
+  (let ((pi-mode-notifications nil)
+        (pi-mode-notifications--timer nil)
+        timer)
+    (unwind-protect
+        (progn
+          ;; a let-binding is not a set: it must not arm the chain
+          (let ((pi-mode-notifications t))
+            (should (eq pi-mode-notifications t)))
+          (should-not pi-mode-notifications--timer)
+          (setq pi-mode-notifications t)
+          (setq timer pi-mode-notifications--timer)
+          (should (timerp timer))
+          (should (memq timer timer-list)))
+      (when (timerp timer) (cancel-timer timer))
+      (setq pi-mode-notifications--timer nil))))
 
 (ert-deftest pi-mode-test-notifications-poll-chain-dies-when-idle ()
   "With nothing to watch the poll chain stops re-arming itself."

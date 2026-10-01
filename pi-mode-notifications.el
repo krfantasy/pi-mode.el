@@ -131,10 +131,9 @@ single-session directories behave exactly as before."
 (defun pi-mode-toggle-notifications ()
   "Toggle `pi-mode-notifications'."
   (interactive)
+  ;; The arming itself is the variable watcher's job: this setq must
+  ;; arm the chain like any other enabling set.
   (setq pi-mode-notifications (not pi-mode-notifications))
-  ;; Enabling must arm the poll chain: it goes idle while disabled.
-  (when pi-mode-notifications
-    (pi-mode-notifications--ensure-poll))
   (message "pi-mode notifications %s" (if pi-mode-notifications "on" "off")))
 
 (defun pi-mode-notifications--jsonl-files (dir)
@@ -318,11 +317,21 @@ A no-op while `pi-mode-notifications' is nil: the chain is armed only
 when there is something to do, so an Emacs that never enables
 notifications runs no periodic timer.  Called at load (for a value set
 in the init file before pi-mode was loaded), whenever a session starts
-via `pi-mode-after-start-hook', and when notifications are enabled.
+via `pi-mode-after-start-hook', and by any enabling set (the variable
+watcher at the end of this file covers a plain `setq').
 ARGS are ignored (the hook passes the new session)."
-  (when (and pi-mode-notifications
-             (not (and pi-mode-notifications--timer
-                       (memq pi-mode-notifications--timer timer-list))))
+  (when pi-mode-notifications
+    (pi-mode-notifications--arm-poll)))
+
+(defun pi-mode-notifications--arm-poll ()
+  "Start the poll timer unless one is already pending.
+Unlike `pi-mode-notifications--ensure-poll' this does not check
+`pi-mode-notifications': callers decide whether the chain should run.
+The variable watcher must go through here because watchers run before
+the new value is stored, so reading the variable inside the callback
+would still see the old one."
+  (unless (and pi-mode-notifications--timer
+               (memq pi-mode-notifications--timer timer-list))
     (setq pi-mode-notifications--timer
           (run-at-time pi-mode-notifications-interval nil
                        #'pi-mode-notifications--poll))))
@@ -332,6 +341,18 @@ ARGS are ignored (the hook passes the new session)."
 ;; state to watch.
 (pi-mode-notifications--ensure-poll)
 (add-hook 'pi-mode-after-start-hook #'pi-mode-notifications--ensure-poll)
+;; Any enabling set arms the chain at once, not just the Customize
+;; setter: a plain `setq' must not wait for the next session start.
+;; Only the `set' operation counts (`setq' and `set-default'); `let'
+;; bindings and unbinding never arm.  The decision uses NEWVAL, not
+;; the variable: watchers run before the store.  The defcustom `:set'
+;; above stays as the guaranteed Customize path on Emacsen whose
+;; `set-default' does not fire watchers.
+(add-variable-watcher
+ 'pi-mode-notifications
+ (lambda (_symbol newval operation _where)
+   (when (and newval (eq operation 'set))
+     (pi-mode-notifications--arm-poll))))
 
 (provide 'pi-mode-notifications)
 

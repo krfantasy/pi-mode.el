@@ -581,6 +581,10 @@ prompts)."
   (let* ((session (pi-mode--resolve-session current-prefix-arg))
          (prompt (read-string "pi prompt: ")))
     (when (not (string-empty-p (string-trim prompt)))
+      ;; Resolution only returns live sessions, but the session can die
+      ;; in between; fail before the hook runs for an unsent text.
+      (unless (pi-mode--session-live-p session)
+        (user-error "pi session is not running; start one with `pi-mode-start'"))
       (run-hook-with-args 'pi-mode-before-send-hook session prompt)
       (with-current-buffer (pi-mode-session-buffer session)
         (ghostel-send-string prompt)
@@ -1586,6 +1590,10 @@ do not error; delete the call from your configuration."
   (interactive "sModel: ")
   (let* ((session (pi-mode--resolve-session current-prefix-arg))
          (text (format "/model %s" model)))
+    ;; Resolution only returns live sessions, but the session can die
+    ;; in between; fail before the hook runs for an unsent text.
+    (unless (pi-mode--session-live-p session)
+      (user-error "pi session is not running; start one with `pi-mode-start'"))
     (run-hook-with-args 'pi-mode-before-send-hook session text)
     (with-current-buffer (pi-mode-session-buffer session)
       (ghostel-send-string text)
